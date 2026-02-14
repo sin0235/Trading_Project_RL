@@ -1,5 +1,3 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
-
 # mô tả 2 thuật toán sẽ dùng
 
 Dưới đây là mô tả chi tiết, đúng “style báo cáo môn học”, cho **2 thuật toán** rất hợp với project của bạn:

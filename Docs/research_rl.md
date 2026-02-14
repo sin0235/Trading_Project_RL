@@ -1,5 +1,3 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
-
 # tôi đang có 1 project môn học RL về đề tài trading, 2 thuật toán để giải quyết bài toán - so sánh giữa 2 cách  , sử dụng dataset của việt nam, giúp tôi nghiên cứu các nội dung:
 
 1. Mô tả bài toán 2. Mô tả dataset sẽ sử dụng 3. Thiết kế và mô tả ý tưởng thuật toán 4. Mô tả môi trường 5. Hướng triển khai thuật toán đảm bảo chi tiết, đủ dung lượng, có giải thích chi tiết, phù hợp với việt nam
