@@ -1,4 +1,10 @@
-API_KEY_VNSTOCK = "vnstock_6fa1ff85c804442f9e142c5a6f9deb3c"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_KEY_VNSTOCK = os.getenv("API_KEY_VNSTOCK")
+
 TICKERS = [
     'ACB', 'BCM', 'BID', 'BVH', 'CTG',
     'FPT', 'GAS', 'GVR', 'HDB', 'HPG',
@@ -7,6 +13,7 @@ TICKERS = [
     'TCB', 'TPB', 'VCB', 'VHM', 'VIB',
     'VIC', 'VJC', 'VNM', 'VPB', 'VRE'
 ]
+
 WINDOW_SIZE = 30
 DATA_PATH = "data/processed"
 

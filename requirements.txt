@@ -6,3 +6,8 @@ matplotlib>=3.7.0
 seaborn>=0.12.0
 jupyter
 notebook
+python-dotenv>=1.0.0
+torch>=2.0.0
+gymnasium>=0.29.0
+stable-baselines3>=2.1.0
+sb3-contrib>=2.1.0
