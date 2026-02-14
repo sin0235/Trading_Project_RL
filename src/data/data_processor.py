@@ -43,7 +43,7 @@ class DataProcessor:
 
             data['rsi'] = self._calculate_rsi(data['close'], window=14) / 100.0
             
-            data['adx'] = self._calculate_adx(data, window=14)
+            data['adx'] = self._calculate_adx(data, window=14) / 100.0
 
             data['volume_norm'] = (
                 (data['volume'] - data['volume'].rolling(60).mean())
