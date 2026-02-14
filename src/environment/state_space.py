@@ -35,11 +35,13 @@ class StateSpace:
     def _load_data(self):
         """Load data tu data_path, dieu chinh lai theo ngay thang de tranh thoi gian khong dong nhat"""
         dfs = {}
+        close_series = {}
         for ticker in self.tickers:
             file_path = os.path.join(self.data_path, f"{ticker}.csv")
             df = pd.read_csv(file_path, parse_dates=['time'])
             df = df.set_index('time')
             dfs[ticker] = df[self.features]
+            close_series[ticker] = df['close']
 
         common_dates = dfs[self.tickers[0]].index
         for ticker in self.tickers[1:]:
@@ -56,9 +58,7 @@ class StateSpace:
         self.n_days = len(self.dates)
 
         self.close_prices = np.stack(
-            [pd.read_csv(os.path.join(self.data_path, f"{t}.csv"), parse_dates=['time'])
-             .set_index('time').loc[common_dates, 'close'].values
-             for t in self.tickers],
+            [close_series[t].loc[common_dates].values for t in self.tickers],
             axis=1
         )
 
@@ -103,6 +103,20 @@ class StateSpace:
         - Neu mode la 'flatten', tra ve vector 1D co chieu la market_dim + portfolio_dim
         - Neu mode la 'sequential', tra ve tuple co 2 phan tu: market_state va portfolio_state
         """
+        if t < self.window_size - 1:
+            raise ValueError(f"t ({t}) must be >= window_size - 1 ({self.window_size - 1})")
+        if t >= self.n_days:
+            raise ValueError(f"t ({t}) must be < n_days ({self.n_days})")
+        
+        if cash < 0:
+            raise ValueError(f"Cash cannot be negative: {cash}")
+        
+        if len(holdings) != self.n_stocks:
+            raise ValueError(f"Holdings length ({len(holdings)}) != n_stocks ({self.n_stocks})")
+        if np.any(holdings < 0):
+            raise ValueError(f"Holdings cannot be negative: {holdings}")
+        
+        
         market_state = self.get_market_state(t)
         prices = self.close_prices[t]
         portfolio_state = self.get_portfolio_state(cash, holdings, prices)
