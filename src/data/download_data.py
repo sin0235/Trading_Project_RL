@@ -22,6 +22,7 @@ class DownloadData:
         self.source = source
         self.delay = delay
         self.data: Dict[str, pd.DataFrame] = {}
+        self.dataset: List[pd.DataFrame] = []
 
     def download_all(self):
         self.data = {}
@@ -46,6 +47,7 @@ class DownloadData:
             file_path = os.path.join(folder_path, f'{ticker}.csv')
             df.to_csv(file_path, index=False)
             print(f"Da luu: {file_path}")
+        self.dataset = list(self.data.values()) 
 
 
 if __name__ == '__main__':

@@ -1,4 +1,8 @@
 from src.data.download_data import DownloadData
+from src.data.data_processor import DataProcessor
+from typing import List
+import pandas as pd
+
 def download_data():
     tickers = [
     'ACB', 'BCM', 'BID', 'BVH', 'CTG',
@@ -17,11 +21,10 @@ def download_data():
     downloader.download_all()
     downloader.save_data()
     
-def clean_data():
-    pass
+    dataset = DataProcessor(downloader.dataset)
+    dataset.process()
+    dataset.save_data()
 
-def main():
-    pass
 
 if __name__ == "__main__":
-    main()
+    download_data()
