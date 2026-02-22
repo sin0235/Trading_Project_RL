@@ -1,4 +1,5 @@
 __pycache__/
+*/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -23,3 +24,11 @@ __pycache__/
 *.tsx
 
 .env
+
+Docs/
+
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz

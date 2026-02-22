@@ -136,7 +136,7 @@ Thuật toán 2: Phần thưởng lợi nhuận logarit
 Đầu ra: r_t
 
 1: nếu V_t ≤ 0 hoặc V_{t+1} ≤ 0 thì
-2:     trả về -∞  // hoặc xử lý lỗi
+2:     trả về -1.0  // Phạt hữu hạn, tránh giá trị vô cực gây bất ổn RL
 3: kết thúc nếu
 4: r_t ← ln(V_{t+1}) - ln(V_t)
 5: trả về r_t
@@ -604,7 +604,7 @@ Hàm: tính_giá_trị_danh_mục(state)
 $$
 \begin{aligned}
 \mu_t &= \mu_{t-1} + \frac{r_t - r_{t-w}}{w} \\
-\sigma_t^2 &= \sigma_{t-1}^2 + \frac{(r_t - \mu_t)^2 - (r_{t-w} - \mu_{t-1})^2}{w}
+\sigma_t^2 &= \sigma_{t-1}^2 + \frac{(r_t - r_{t-w})(r_t - \mu_t + r_{t-w} - \mu_{t-1})}{w}
 \end{aligned}
 $$
 
@@ -687,9 +687,9 @@ Toàn cục: returns_buffer (bộ đệm vòng, kích thước w)
 22: // Cập nhật tăng dần trung bình
 23: μ_mới ← μ + (r_t - r_cũ) / w
 24: 
-25: // Cập nhật tăng dần phương sai
-26: σ²_mới ← σ² + ((r_t - μ_mới)² - (r_cũ - μ)²) / w
-27: σ²_mới ← max(σ²_mới, 0)  // Đảm bảo không âm
+25: // Cập nhật tăng dần phương sai (Welford sliding window)
+26: σ²_mới ← σ² + (r_t - r_cũ) × (r_t - μ_mới + r_cũ - μ) / w
+27: σ²_mới ← max(σ²_mới, 0)  // An toàn số học floating-point
 28: 
 29: // Cập nhật biến toàn cục
 30: μ ← μ_mới

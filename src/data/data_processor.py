@@ -20,35 +20,34 @@ class DataProcessor:
                 data.bfill(inplace=True)
         return self.dataset
 
+    def _zscore_rolling(self, series: pd.Series, window: int = 60) -> pd.Series:
+        return (series - series.rolling(window).mean()) / series.rolling(window).std()
+
     def calculate_features(self) -> List[pd.DataFrame]:
-        """Tinh 7 features theo state.md: close_norm, return_1d, return_5d, macd, rsi, volume_norm"""
+        """Tinh 7 features, tat ca deu duoc chuan hoa ve ~mean=0, std=1 (Z-score rolling 60)"""
         for data in self.dataset:
-            data['close_norm'] = (
-                (data['close'] - data['close'].rolling(60).mean())
-                / data['close'].rolling(60).std()
-            )
+            data['close_norm'] = self._zscore_rolling(data['close'])
 
-            data['return_1d'] = data['close'].pct_change(1)
-            data['return_5d'] = data['close'].pct_change(5)
+            raw_return_1d = data['close'].pct_change(1)
+            data['return_1d'] = self._zscore_rolling(raw_return_1d)
 
-            # MACD histogram: (EMA12 - EMA26) - Signal(9)
+            raw_return_5d = data['close'].pct_change(5)
+            data['return_5d'] = self._zscore_rolling(raw_return_5d)
+
             ema12 = data['close'].ewm(span=12, adjust=False).mean()
             ema26 = data['close'].ewm(span=26, adjust=False).mean()
             macd_line = ema12 - ema26
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             macd_hist = macd_line - signal_line
-            # Chuan hoa MACD theo rolling std cua close de scale dong nhat giua cac ma
-            close_std = data['close'].rolling(60).std()
-            data['macd'] = macd_hist / close_std
+            data['macd'] = self._zscore_rolling(macd_hist)
 
-            data['rsi'] = self._calculate_rsi(data['close'], window=14) / 100.0
-            
-            data['adx'] = self._calculate_adx(data, window=14) / 100.0
+            raw_rsi = self._calculate_rsi(data['close'], window=14)
+            data['rsi'] = self._zscore_rolling(raw_rsi)
 
-            data['volume_norm'] = (
-                (data['volume'] - data['volume'].rolling(60).mean())
-                / data['volume'].rolling(60).std()
-            )
+            raw_adx = self._calculate_adx(data, window=14)
+            data['adx'] = self._zscore_rolling(raw_adx)
+
+            data['volume_norm'] = self._zscore_rolling(data['volume'])
 
         return self.dataset
 
@@ -62,10 +61,10 @@ class DataProcessor:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    def drop_na(self, min_window: int = 60) -> List[pd.DataFrame]:
-        """Xoa cac dong dau chua du window de tinh features"""
+    def drop_na(self) -> List[pd.DataFrame]:
+        """Xoa cac dong co NaN phat sinh tu rolling window cua cac features"""
         for i, data in enumerate(self.dataset):
-            self.dataset[i] = data.iloc[min_window:].reset_index(drop=True)
+            self.dataset[i] = data.dropna().reset_index(drop=True)
         return self.dataset
     
 
