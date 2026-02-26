@@ -5,14 +5,22 @@ load_dotenv()
 
 API_KEY_VNSTOCK = os.getenv("API_KEY_VNSTOCK")
 
-TICKERS = [
+ALL_TICKERS = [
     'ACB', 'BCM', 'BID', 'BVH', 'CTG',
     'FPT', 'GAS', 'GVR', 'HDB', 'HPG',
     'MBB', 'MSN', 'MWG', 'PLX', 'POW',
     'SAB', 'SHB', 'SSB', 'SSI', 'STB',
     'TCB', 'TPB', 'VCB', 'VHM', 'VIB',
-    'VIC', 'VJC', 'VNM', 'VPB', 'VRE'
+    'VIC', 'VJC', 'VNM', 'VPB', 'VRE',
 ]
+
+TICKERS = [
+    'ACB', 'BID', 'BVH', 'CTG', 'FPT',
+    'GAS', 'HPG', 'MBB', 'MSN', 'MWG',
+    'SHB', 'SSI', 'STB', 'VCB', 'VIC', 
+    'VNM',
+]
+
 
 WINDOW_SIZE = 30
 DATA_PATH = "data/processed"

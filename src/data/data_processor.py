@@ -61,10 +61,12 @@ class DataProcessor:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    def drop_na(self) -> List[pd.DataFrame]:
-        """Xoa cac dong co NaN phat sinh tu rolling window cua cac features"""
+    def drop_na(self, start_date: str = '2015-01-01') -> List[pd.DataFrame]:
+        """Xoa NaN va loc du lieu tu start_date tro di"""
         for i, data in enumerate(self.dataset):
-            self.dataset[i] = data.dropna().reset_index(drop=True)
+            data = data.dropna()
+            data = data[data['time'] >= start_date]
+            self.dataset[i] = data.reset_index(drop=True)
         return self.dataset
     
 
