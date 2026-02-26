@@ -80,7 +80,7 @@ class TradingEnv(gym.Env):
 
         self.t = self.state_space.window_size - 1
         self.cash = float(self.initial_balance)
-        self.holdings = np.zeros(self.n_stocks, dtype=np.float64)
+        self.holdings = np.zeros(self.n_stocks, dtype=np.int64)
         self.reward_fn.reset()
 
         prices = self.state_space.get_prices(self.t)
@@ -145,10 +145,9 @@ class TradingEnv(gym.Env):
                 value = shares * prices[i]
                 fee = value * self.fee_rate
                 cost = value + fee
-                if cost <= self.cash:
-                    self.cash -= cost
-                    self.holdings[i] += shares
-                    total_fees += fee
+                self.cash -= cost
+                self.holdings[i] += shares
+                total_fees += fee
 
         return total_fees
 

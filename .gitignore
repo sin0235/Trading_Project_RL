@@ -7,10 +7,6 @@ __pycache__/
 *.pyz
 .venv/
 
-*.csv
-!data/raw/*.csv
-!data/processed/*.csv
-
 *.json
 *.xml
 *.yaml
