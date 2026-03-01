@@ -9,7 +9,7 @@ from src.environment.action_space import (
     decode_continuous_action,
     apply_constraints,
 )
-from src.environment.reward_function import RewardFunction
+from src.environment.reward_function import AdvancedRewardFunction
 from src.constants import WINDOW_SIZE, DATA_PATH, FEATURES
 
 
@@ -29,7 +29,6 @@ class TradingEnv(gym.Env):
         initial_balance: float = 1_000_000_000,
         max_shares: int = 100,
         fee_rate: float = 0.0015,
-        reward_type: str = "simple",
         window_size: int = WINDOW_SIZE,
         data_path: str = DATA_PATH,
         features: List[str] = FEATURES,
@@ -50,7 +49,7 @@ class TradingEnv(gym.Env):
             features=features,
             mode="flatten",
         )
-        self.reward_fn = RewardFunction(reward_type=reward_type)
+        self.reward_fn = AdvancedRewardFunction(window=30)
 
         self.n_stocks = self.state_space.n_stocks
         self.k = 3
@@ -114,7 +113,7 @@ class TradingEnv(gym.Env):
         v_new = self.cash + np.sum(self.holdings * new_prices)
         self.portfolio_value = v_new
 
-        reward = self.reward_fn.calculate(v_old, v_new)
+        reward = self.reward_fn.calculate(v_old, v_new, trade_amounts)
 
         obs = self.state_space.get_state(self.t, self.cash, self.holdings)
 

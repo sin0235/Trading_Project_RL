@@ -73,8 +73,15 @@ def apply_constraints(trade_amounts: np.ndarray,
             max_sell = holdings[i]
             trade_amounts[i] = -min(abs(trade_amounts[i]), max_sell)
 
-    # ===== 2️ BUY constraint =====
-    available_cash = cash
+    # Tinh tien thu duoc tu ban (tru phi) de tinh vao ngan sach mua
+    sell_proceeds = 0.0
+    for i in range(n_stocks):
+        if trade_amounts[i] < 0:
+            value = abs(trade_amounts[i]) * prices[i]
+            sell_proceeds += value - value * fee_rate
+
+    # ===== 2 BUY constraint =====
+    available_cash = cash + sell_proceeds
 
     for i in range(n_stocks):
         if trade_amounts[i] > 0:
