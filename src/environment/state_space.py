@@ -94,7 +94,7 @@ class StateSpace:
         cash_ratio = cash / portfolio_value
         holdings_ratio = (holdings * prices) / portfolio_value
 
-        return np.concatenate([[cash_ratio], holdings_ratio])
+        return np.concatenate([holdings_ratio, [cash_ratio]])
 
     def get_state(self, t: int, cash: float, holdings: np.ndarray) -> np.ndarray:
         """

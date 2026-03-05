@@ -27,7 +27,7 @@ class TradingEnv(gym.Env):
         tickers: List[str],
         mode: str = "discrete",
         initial_balance: float = 1_000_000_000,
-        max_shares: int = 100,
+        min_shares: int = 100,
         fee_rate: float = 0.0015,
         reward_type: str = "simple",
         window_size: int = WINDOW_SIZE,
@@ -39,7 +39,7 @@ class TradingEnv(gym.Env):
 
         self.mode = mode
         self.initial_balance = initial_balance
-        self.max_shares = max_shares
+        self.min_shares = min_shares
         self.fee_rate = fee_rate
         self.render_mode = render_mode
 
@@ -62,11 +62,11 @@ class TradingEnv(gym.Env):
         )
 
         if self.mode == "discrete":
-            self.action_space = spaces.Discrete(self.k * self.n_stocks)
+            self.action_space = spaces.MultiDiscrete([self.k] * self.n_stocks)
         elif self.mode == "continuous":
             self.action_space = spaces.Box(
-                low=-1.0, high=1.0,
-                shape=(self.n_stocks,),
+                low=0, high=1.0,
+                shape=(self.n_stocks + 1,),
                 dtype=np.float32,
             )
 
@@ -95,18 +95,21 @@ class TradingEnv(gym.Env):
         prices = self.state_space.get_prices(self.t)
         v_old = self.cash + np.sum(self.holdings * prices)
 
+        "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "discrete":
             trade_amounts = decode_discrete_action(
-                action, self.n_stocks, self.max_shares, self.k
+                action, self.n_stocks, self.min_shares, self.cash, self.holdings, prices, self.fee_rate
             )
         else:
-            trade_amounts = decode_continuous_action(action, self.max_shares)
+            ratio = self.state_space.get_portfolio_state(self.cash, self.holdings, prices)
+            trade_amounts = decode_continuous_action(action, self.min_shares)
 
         trade_amounts = apply_constraints(
             trade_amounts, self.cash, self.holdings, prices, self.fee_rate
         )
 
         total_fees = self._execute_trades(trade_amounts, prices)
+        "-------------------------------------END ACTION-------------------------------------------"
 
         self.t += 1
 
