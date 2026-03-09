@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import List, Tuple
+from typing import List, Optional
 import os
 from src.constants import WINDOW_SIZE, DATA_PATH, FEATURES
 
@@ -9,6 +9,7 @@ class StateSpace:
     def __init__(self, tickers: List[str],
                  window_size: int = WINDOW_SIZE,
                  data_path: str = DATA_PATH,
+                 data_dict: Optional[dict] = None,
                  features: List[str] = FEATURES,
                  mode: str = "flatten"):
         """
@@ -22,6 +23,7 @@ class StateSpace:
         self.tickers = tickers
         self.window_size = window_size
         self.data_path = data_path
+        self.data_dict = data_dict
         self.n_stocks = len(tickers)
         self.features = features
         self.n_features = len(self.features)
@@ -33,15 +35,27 @@ class StateSpace:
         self._load_data()
 
     def _load_data(self):
-        """Load data tu data_path, dieu chinh lai theo ngay thang de tranh thoi gian khong dong nhat"""
-        dfs = {}
-        close_series = {}
-        for ticker in self.tickers:
-            file_path = os.path.join(self.data_path, f"{ticker}.csv")
-            df = pd.read_csv(file_path, parse_dates=['time'])
-            df = df.set_index('time')
-            dfs[ticker] = df[self.features]
-            close_series[ticker] = df['close']
+        """Load data tu data_path hoac data_dict"""
+        if self.data_dict is not None:
+            # Use provided data_dict
+            dfs = {}
+            close_series = {}
+            for ticker in self.tickers:
+                df = self.data_dict[ticker].copy()
+                df['time'] = pd.to_datetime(df['time'])
+                df = df.set_index('time')
+                dfs[ticker] = df[self.features]
+                close_series[ticker] = df['close']
+        else:
+            # Load from files
+            dfs = {}
+            close_series = {}
+            for ticker in self.tickers:
+                file_path = os.path.join(self.data_path, f"{ticker}.csv")
+                df = pd.read_csv(file_path, parse_dates=['time'])
+                df = df.set_index('time')
+                dfs[ticker] = df[self.features]
+                close_series[ticker] = df['close']
 
         common_dates = dfs[self.tickers[0]].index
         for ticker in self.tickers[1:]:
@@ -94,7 +108,7 @@ class StateSpace:
         cash_ratio = cash / portfolio_value
         holdings_ratio = (holdings * prices) / portfolio_value
 
-        return np.concatenate([[cash_ratio], holdings_ratio])
+        return np.concatenate([holdings_ratio, [cash_ratio]])
 
     def get_state(self, t: int, cash: float, holdings: np.ndarray) -> np.ndarray:
         """

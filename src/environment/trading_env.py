@@ -2,6 +2,9 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from typing import List, Optional
+import matplotlib.pyplot as plt
+import pandas as pd
+from collections import deque
 
 from src.environment.state_space import StateSpace
 from src.environment.action_space import (
@@ -27,25 +30,46 @@ class TradingEnv(gym.Env):
         tickers: List[str],
         mode: str = "discrete",
         initial_balance: float = 1_000_000_000,
-        max_shares: int = 100,
+        min_shares: int = 100,
         fee_rate: float = 0.0015,
         window_size: int = WINDOW_SIZE,
         data_path: str = DATA_PATH,
+        data_dict: Optional[dict] = None,
         features: List[str] = FEATURES,
         render_mode: Optional[str] = None,
+        max_steps: int = 100,
+        random_start: bool = True,
+        reward_scaling: float = 1e-4,
+        make_plots: bool = False,
+        print_verbosity: int = 10,
+        initial: bool = True,
+        previous_state: Optional[list] = None,
+        model_name: str = "",
+        iteration: str = "",
     ):
         super().__init__()
 
         self.mode = mode
         self.initial_balance = initial_balance
-        self.max_shares = max_shares
+        self.min_shares = min_shares
         self.fee_rate = fee_rate
         self.render_mode = render_mode
+        self.reward_scaling = reward_scaling
+        self.make_plots = make_plots
+        self.print_verbosity = print_verbosity
+        self.initial = initial
+        self.previous_state = previous_state or []
+        self.model_name = model_name
+        self.iteration = iteration
+
+        # Alias for FinRL compatibility
+        self.initial_amount = self.initial_balance
 
         self.state_space = StateSpace(
             tickers=tickers,
             window_size=window_size,
             data_path=data_path,
+            data_dict=data_dict,
             features=features,
             mode="flatten",
         )
@@ -53,6 +77,13 @@ class TradingEnv(gym.Env):
 
         self.n_stocks = self.state_space.n_stocks
         self.k = 3
+        self.max_t = self.state_space.n_days - 1
+
+        # Giới hạn số bước trên mỗi episode để không vượt quá độ dài dữ liệu
+        # và tránh truy cập ngoài range khi hết data (vấn đề trading_env cũ gặp phải).
+        self.max_steps = min(max_steps, self.state_space.max_steps)
+        self.random_start = random_start
+        self.current_step = 0
 
         self.observation_space = spaces.Box(
             low=-5.0, high=5.0,
@@ -61,26 +92,69 @@ class TradingEnv(gym.Env):
         )
 
         if self.mode == "discrete":
-            self.action_space = spaces.Discrete(self.k * self.n_stocks)
+            self.action_space = spaces.MultiDiscrete([self.k] * self.n_stocks)
         elif self.mode == "continuous":
             self.action_space = spaces.Box(
-                low=-1.0, high=1.0,
-                shape=(self.n_stocks,),
+                low=0, high=1.0,
+                shape=(self.n_stocks + 1,),
                 dtype=np.float32,
             )
 
+        # Initialize state variables
         self.t = None
         self.cash = None
         self.holdings = None
         self.portfolio_value = None
+        self.cost = 0
+        self.trades = 0
+        self.episode = 0
+
+        # Memory tracking (from FinRL)
+        self.asset_memory = []
+        self.rewards_memory = []
+        self.actions_memory = []
+        self.date_memory = []
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        self.t = self.state_space.window_size - 1
-        self.cash = float(self.initial_balance)
-        self.holdings = np.zeros(self.n_stocks, dtype=np.int64)
+        if self.random_start:
+            min_t = self.state_space.window_size - 1
+            # Đảm bảo episode có thể chạy tối đa self.max_steps bước mà không vượt quá self.max_t
+            max_start_t = self.max_t - (self.max_steps - 1)
+            max_start_t = max(min_t, max_start_t)
+            self.t = np.random.randint(min_t, max_start_t + 1)
+        else:
+            self.t = self.state_space.window_size - 1
+
+        if self.initial:
+            self.cash = float(self.initial_balance)
+            self.holdings = np.zeros(self.n_stocks, dtype=np.int64)
+            self.asset_memory = [self.initial_balance]
+        else:
+            # Using Previous State
+            if len(self.previous_state) > 0:
+                self.cash = self.previous_state[0]
+                self.holdings = np.array(self.previous_state[1:(self.n_stocks + 1)], dtype=np.int64)
+                previous_total_asset = self.previous_state[0] + sum(
+                    np.array(self.previous_state[1:(self.n_stocks + 1)]) *
+                    np.array(self.previous_state[(self.n_stocks + 1):(self.n_stocks * 2 + 1)])
+                )
+                self.asset_memory = [previous_total_asset]
+            else:
+                self.cash = float(self.initial_balance)
+                self.holdings = np.zeros(self.n_stocks, dtype=np.int64)
+                self.asset_memory = [self.initial_balance]
+
         self.reward_fn.reset()
+        self.current_step = 0
+        self.cost = 0
+        self.trades = 0
+        self.rewards_memory = []
+        self.actions_memory = []
+        self.date_memory = [self._get_date()]
+
+        self.episode += 1
 
         prices = self.state_space.get_prices(self.t)
         self.portfolio_value = self.cash + np.sum(self.holdings * prices)
@@ -91,38 +165,90 @@ class TradingEnv(gym.Env):
         return obs, info
 
     def step(self, action):
+        self.current_step += 1
         prices = self.state_space.get_prices(self.t)
         v_old = self.cash + np.sum(self.holdings * prices)
 
+        "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "discrete":
             trade_amounts = decode_discrete_action(
-                action, self.n_stocks, self.max_shares, self.k
+                action, self.n_stocks, self.min_shares, self.cash, self.holdings, prices
             )
         else:
-            trade_amounts = decode_continuous_action(
-                action, self.max_shares, self.n_stocks
-            )
+            ratio = self.state_space.get_portfolio_state(self.cash, self.holdings, prices)
+            trade_amounts = decode_continuous_action(action, ratio, self.cash, self.holdings, prices)
 
         trade_amounts = apply_constraints(
-            trade_amounts, self.cash, self.holdings, prices, self.fee_rate
+            trade_amounts, self.cash, self.holdings, prices, self.fee_rate, self.min_shares
         )
 
         total_fees = self._execute_trades(trade_amounts, prices)
+        # Cập nhật thống kê giao dịch
+        self.cost += total_fees
+        self.trades += int(np.sum(np.abs(trade_amounts) > 0))
+        "-------------------------------------END ACTION-------------------------------------------"
 
-        self.t += 1
+        # Tiến tới ngày tiếp theo nhưng KHÔNG vượt quá self.max_t để tránh out-of-range
+        self.t = min(self.t + 1, self.max_t)
 
         new_prices = self.state_space.get_prices(self.t)
         v_new = self.cash + np.sum(self.holdings * new_prices)
         self.portfolio_value = v_new
 
-        reward = self.reward_fn.calculate(v_old, v_new, trade_amounts)
+        reward = self.reward_fn.calculate(v_old, v_new)
+        # Scale reward giống FinRL
+        reward = reward * self.reward_scaling
 
         obs = self.state_space.get_state(self.t, self.cash, self.holdings)
 
-        terminated = self.t >= self.state_space.n_days - 1 or v_new <= 0
+        # Ghi lại lịch sử tài sản, phần thưởng, hành động, thời gian (FinRL-style logging)
+        self.asset_memory.append(self.portfolio_value)
+        self.rewards_memory.append(reward)
+        self.actions_memory.append(trade_amounts.copy())
+        self.date_memory.append(self._get_date())
+
+        terminated = (self.t >= self.max_t) or (self.current_step >= self.max_steps) or (v_new <= 0)
         truncated = False
 
         info = self._build_info(new_prices, trade_amounts, total_fees)
+
+        # Logging at episode end
+        if terminated:
+            if self.make_plots:
+                self._make_plot()
+            end_total_asset = v_new
+            df_total_value = pd.DataFrame(self.asset_memory)
+            tot_reward = end_total_asset - self.initial_balance
+            df_total_value.columns = ["account_value"]
+            df_total_value["date"] = self.date_memory
+            df_total_value["daily_return"] = df_total_value["account_value"].pct_change(1)
+            if df_total_value["daily_return"].std() != 0:
+                sharpe = (252 ** 0.5) * df_total_value["daily_return"].mean() / df_total_value["daily_return"].std()
+            else:
+                sharpe = 0
+
+            if self.episode % self.print_verbosity == 0:
+                print(f"day: {self.t}, episode: {self.episode}")
+                print(f"begin_total_asset: {self.asset_memory[0]:0.2f}")
+                print(f"end_total_asset: {end_total_asset:0.2f}")
+                print(f"total_reward: {tot_reward:0.2f}")
+                print(f"total_cost: {self.cost:0.2f}")
+                print(f"total_trades: {self.trades}")
+                if df_total_value["daily_return"].std() != 0:
+                    print(f"Sharpe: {sharpe:0.3f}")
+                print("=================================")
+
+            # Save results if model_name provided
+            if self.model_name != "":
+                df_actions = self.save_action_memory()
+                df_actions.to_csv(f"results/actions_{self.model_name}_{self.iteration}.csv")
+                df_total_value.to_csv(f"results/account_value_{self.model_name}_{self.iteration}.csv", index=False)
+                pd.DataFrame(self.rewards_memory, columns=["account_rewards"]).to_csv(
+                    f"results/account_rewards_{self.model_name}_{self.iteration}.csv", index=False
+                )
+                plt.plot(self.asset_memory, "r")
+                plt.savefig(f"results/account_value_{self.model_name}_{self.iteration}.png")
+                plt.close()
 
         return obs, float(reward), terminated, truncated, info
 
@@ -163,3 +289,28 @@ class TradingEnv(gym.Env):
             "date": str(self.state_space.dates[self.t]),
             "step": self.t - (self.state_space.window_size - 1),
         }
+
+    def _make_plot(self):
+        plt.plot(self.asset_memory, "r")
+        plt.savefig(f"results/account_value_trade_{self.episode}.png")
+        plt.close()
+
+    def _get_date(self):
+        return self.state_space.dates[self.t]
+
+    def save_asset_memory(self):
+        date_list = self.date_memory
+        asset_list = self.asset_memory
+        df_account_value = pd.DataFrame({"date": date_list, "account_value": asset_list})
+        return df_account_value
+
+    def save_action_memory(self):
+        date_list = self.date_memory[:-1]
+        df_date = pd.DataFrame(date_list)
+        df_date.columns = ["date"]
+
+        action_list = self.actions_memory
+        df_actions = pd.DataFrame(action_list)
+        df_actions.columns = self.state_space.tickers
+        df_actions.index = df_date.date
+        return df_actions
