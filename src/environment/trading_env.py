@@ -99,7 +99,9 @@ class TradingEnv(gym.Env):
                 action, self.n_stocks, self.max_shares, self.k
             )
         else:
-            trade_amounts = decode_continuous_action(action, self.max_shares)
+            trade_amounts = decode_continuous_action(
+                action, self.max_shares, self.n_stocks
+            )
 
         trade_amounts = apply_constraints(
             trade_amounts, self.cash, self.holdings, prices, self.fee_rate

@@ -21,10 +21,12 @@ __pycache__/
 
 .env
 
-Docs/
 
 *.pyc
 *.pyo
 *.pyd
 *.pyw
 *.pyz
+
+
+*.md

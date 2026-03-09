@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import List
+from typing import List, Tuple
 import os
 from src.constants import WINDOW_SIZE, DATA_PATH, FEATURES
 
@@ -128,6 +128,26 @@ class StateSpace:
 
     def get_prices(self, t: int) -> np.ndarray:
         return self.close_prices[t]
+
+    def flat_obs_to_sequential(self, obs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Chuyen observation dang flatten (tu env mode=flatten) thanh (market_state, portfolio_state)
+        dung cho LSTM: market_state (seq_len, n_stocks*n_features), portfolio_state (portfolio_dim,).
+        Khi goi LSTM can them batch dim: (1, seq_len, n_stocks*n_features), (1, portfolio_dim).
+
+        Chi dung khi obs duoc tao boi StateSpace cung cau hinh (mode=flatten, cung window_size, n_stocks, n_features).
+        """
+        if len(obs) != self.state_dim:
+            raise ValueError(
+                f"obs length {len(obs)} != state_dim {self.state_dim} "
+                f"(market_dim={self.market_dim}, portfolio_dim={self.portfolio_dim})"
+            )
+        market_flat = obs[:self.market_dim]
+        portfolio = obs[self.market_dim:self.market_dim + self.portfolio_dim]
+        seq_len = self.window_size
+        input_size = self.n_stocks * self.n_features
+        market_state = market_flat.reshape(seq_len, input_size).astype(np.float32)
+        return market_state, portfolio.astype(np.float32)
 
     @property
     def observation_shape(self):
