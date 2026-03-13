@@ -80,7 +80,8 @@
 #     return trade_amounts
 import numpy as np
 
-def decode_discrete_action(action, n_stocks, min_shares, cash, holdings, prices) -> np.ndarray:
+def decode_discrete_action(action, n_stocks, min_shares, cash, holdings, prices,
+                           fee_rate: float = 0.001) -> np.ndarray:
     """
     Action 0: Sell all, 1: Hold, 2: Buy
     """
@@ -93,20 +94,24 @@ def decode_discrete_action(action, n_stocks, min_shares, cash, holdings, prices)
 
     # 2. Tính toán tiền khả dụng để MUA
     # Giả định: Tiền bán thu về được dùng ngay trong step (phù hợp slide của bạn)
-    sell_proceeds = np.sum([abs(trade_amounts[i]) * prices[i] * (1 - 0.001) for i in range(n_stocks) if trade_amounts[i] < 0])
+    sell_proceeds = np.sum([
+        abs(trade_amounts[i]) * prices[i] * (1 - fee_rate)
+        for i in range(n_stocks) if trade_amounts[i] < 0
+    ])
     total_available_cash = cash + sell_proceeds
+
     
     # Giới hạn mỗi mã mua tối đa 20% NAV hoặc tổng tiền mặt hiện có
     NAV = cash + np.sum(holdings * prices)
     n_stocks_to_buy = np.sum(action == 2)
-    
+
     if n_stocks_to_buy > 0:
         # Chia đều tiền cho các mã muốn mua, giới hạn bởi 20% NAV mỗi mã
         budget_per_stock = min(total_available_cash / n_stocks_to_buy, NAV * 0.2)
         for i in range(n_stocks):
             if action[i] == 2:
                 # Tính số lượng cổ phiếu (chưa xét lô 100, sẽ xét ở apply_constraints)
-                trade_amounts[i] = int(budget_per_stock / (prices[i] * (1 + 0.001)))
+                trade_amounts[i] = int(budget_per_stock / (prices[i] * (1 + fee_rate)))
 
     return trade_amounts
 

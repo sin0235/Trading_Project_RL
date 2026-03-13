@@ -1,222 +1,291 @@
-import pandas as pd
-import numpy as np
+"""
+Training script cho PPO + LSTM trên TradingEnv.
+
+Luồng chính:
+    1. Load data, chia train/val/test
+    2. Tạo env (train + val)
+    3. Tạo model PPOLSTMActorCritic + PPOAgent
+    4. Training loop: collect rollout -> PPO update -> eval -> checkpoint
+    5. Final eval trên test set, lưu summary
+
+Chạy:
+    python -m src.training.PPO
+"""
+
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import EvalCallback
+import random
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+from src.constants import TICKERS, FEATURES, WINDOW_SIZE
+from src.models.lstm import PPOLSTMActorCritic
+from src.agents.ppo_agent import PPOAgent
 from src.environment.trading_env import TradingEnv
-from src.constants import TICKERS, FEATURES, WINDOW_SIZE, DATA_PATH
+from src.utils.data_splitter import load_data, split_by_ratio
+from src.utils.metrics import compute_all, format_report
+from src.utils.logger import TrainingLogger, make_run_id
 
 
-def load_processed_data(data_path: str, tickers: list, train_ratio: float = 0.8) -> tuple:
-    """
-    Load dữ liệu đã processed và split thành train/test theo thời gian
-    Returns: (train_data_dict, test_data_dict) where dict[ticker] = df
-    """
-    data_dict = {}
-    for ticker in tickers:
-        file_path = os.path.join(data_path, f"{ticker}.csv")
-        if os.path.exists(file_path):
-            df = pd.read_csv(file_path, parse_dates=['time'])
-            df = df.sort_values('time').reset_index(drop=True)
-            data_dict[ticker] = df
-        else:
-            print(f"Warning: {file_path} not found")
+DEFAULT_CONFIG = {
+    # --- Data ---
+    "tickers": TICKERS,
+    "features": FEATURES,
+    "window_size": WINDOW_SIZE,
+    "train_ratio": 0.7,
+    "val_ratio": 0.15,
+    "test_ratio": 0.15,
 
-    if not data_dict:
-        raise ValueError("No data files found")
+    # --- Environment ---
+    "initial_balance": 1_000_000_000,
+    "fee_rate": 0.0015,
+    "max_steps_train": 200,
+    "max_steps_eval": 9999,
+    "reward_scaling": 1e-4,
 
-    # Split theo thời gian cho mỗi ticker
-    train_data = {}
-    test_data = {}
-    for ticker, df in data_dict.items():
-        n_train = int(len(df) * train_ratio)
-        train_data[ticker] = df.iloc[:n_train].copy()
-        test_data[ticker] = df.iloc[n_train:].copy()
+    # --- Model (LSTM) ---
+    "hidden_size": 128,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "log_std_init": -0.5,
 
-    return train_data, test_data
+    # --- PPO ---
+    "learning_rate": 3e-4,
+    "n_steps": 2048,
+    "batch_size": 256,
+    "n_epochs": 10,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_range": 0.2,
+    "ent_coef": 0.01,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "target_kl": 0.03,
+
+    # --- Schedule ---
+    "total_timesteps": 500_000,
+    "lr_decay": True,
+    "eval_freq": 10,
+    "save_freq": 50,
+    "n_eval_episodes": 3,
+
+    # --- Misc ---
+    "seed": 42,
+    "device": "auto",
+}
 
 
-def train_ppo(total_timesteps: int = 100000, save_path: str = "saved_models/ppo_model", train_ratio: float = 0.8):
-    """
-    Hàm training PPO với dữ liệu từ data/processed, split train/test
-    """
-    # 1. Load và split dữ liệu
-    print("Loading and splitting data...")
-    train_data, test_data = load_processed_data(DATA_PATH, TICKERS, train_ratio)
-    print(f"Train data: {len(train_data[TICKERS[0]])} days per ticker")
-    print(f"Test data: {len(test_data[TICKERS[0]])} days per ticker")
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-    # 2. Khởi tạo môi trường training
-    print("Initializing training environment...")
-    env = TradingEnv(
-        tickers=TICKERS,
-        mode="continuous",  # PPO sử dụng continuous action space
-        initial_balance=1_000_000_000,  # 1 tỷ VNĐ
-        fee_rate=0.0015,  # Phí giao dịch
-        reward_type="simple",
-        window_size=WINDOW_SIZE,
-        data_dict=train_data,
-        features=FEATURES,
-        max_steps=100,
-        random_start=True
-    )
 
-    # Wrap env cho stable-baselines3
-    env = DummyVecEnv([lambda: env])
-
-    # 3. Thiết lập siêu tham số PPO
-    ppo_params = {
-        "learning_rate": 3e-4,
-        "n_steps": 2048,
-        "batch_size": 64,
-        "n_epochs": 10,
-        "gamma": 0.99,
-        "gae_lambda": 0.95,
-        "clip_range": 0.2,
-        "ent_coef": 0.01,
-        "vf_coef": 0.5,
-        "max_grad_norm": 0.5,
-    }
-
-    # 4. Khởi tạo model PPO
-    print("Initializing PPO model...")
-    model = PPO(
-        "MlpPolicy",
-        env,
-        verbose=1,
-        tensorboard_log="./results/",
-        **ppo_params
-    )
-
-    # 5. Thiết lập callback để evaluate trên test data
-    eval_env = TradingEnv(
-        tickers=TICKERS,
+def make_env(tickers, data_dict, config, for_eval=False):
+    return TradingEnv(
+        tickers=tickers,
         mode="continuous",
-        initial_balance=1_000_000_000,
-        fee_rate=0.0015,
-        reward_type="simple",
-        window_size=WINDOW_SIZE,
-        data_dict=test_data,
-        features=FEATURES,
-        max_steps=100,
-        random_start=True
-    )
-    eval_env = DummyVecEnv([lambda: eval_env])
-
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path="./saved_models/best_ppo/",
-        log_path="./results/",
-        eval_freq=10000,
-        deterministic=True,
-        render=False
+        initial_balance=config["initial_balance"],
+        fee_rate=config["fee_rate"],
+        window_size=config["window_size"],
+        data_dict=data_dict,
+        features=config["features"],
+        max_steps=config["max_steps_eval"] if for_eval else config["max_steps_train"],
+        random_start=not for_eval,
+        reward_scaling=config["reward_scaling"],
+        print_verbosity=999999,
     )
 
-    # 6. Training
-    print(f"Starting PPO training for {total_timesteps} timesteps...")
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=eval_callback,
-        progress_bar=True
+
+def train_ppo(config: dict = None):
+    cfg = {**DEFAULT_CONFIG, **(config or {})}
+    set_seed(cfg["seed"])
+
+    # ----------------------------------------------------------------
+    # 1. Load & split data
+    # ----------------------------------------------------------------
+    data_dict = load_data(tickers=cfg["tickers"])
+    split = split_by_ratio(
+        data_dict,
+        train_ratio=cfg["train_ratio"],
+        val_ratio=cfg["val_ratio"],
+        test_ratio=cfg["test_ratio"],
+    )
+    print(f"Data split: {split.summary()}")
+
+    # ----------------------------------------------------------------
+    # 2. Environments
+    # ----------------------------------------------------------------
+    train_env = make_env(cfg["tickers"], split.train, cfg, for_eval=False)
+    val_env   = make_env(cfg["tickers"], split.val,   cfg, for_eval=True)
+    test_env  = make_env(cfg["tickers"], split.test,  cfg, for_eval=True)
+
+    state_space = train_env.state_space
+    n_stocks  = state_space.n_stocks
+    n_features = state_space.n_features
+
+    # ----------------------------------------------------------------
+    # 3. Model + Agent
+    # ----------------------------------------------------------------
+    model = PPOLSTMActorCritic(
+        n_stocks=n_stocks,
+        n_features=n_features,
+        seq_len=cfg["window_size"],
+        hidden_size=cfg["hidden_size"],
+        num_layers=cfg["num_layers"],
+        dropout=cfg["dropout"],
+        log_std_init=cfg["log_std_init"],
     )
 
-    # 7. Lưu model
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    model.save(save_path)
-    print(f"Model saved to {save_path}")
-
-    return model
-
-
-def evaluate_ppo(model_path: str, test_data_dict: dict = None, n_episodes: int = 10):
-    """
-    Hàm đánh giá model PPO trên test data
-    Tính các metrics: total return, Sharpe ratio, max drawdown, win rate
-    """
-    if test_data_dict is None:
-        # Nếu không cung cấp, load và split từ toàn bộ data (giả sử test là 20% cuối)
-        _, test_data_dict = load_processed_data(DATA_PATH, TICKERS, 0.8)
-
-    # Load model
-    model = PPO.load(model_path)
-
-    # Khởi tạo eval env
-    eval_env = TradingEnv(
-        tickers=TICKERS,
-        mode="continuous",
-        initial_balance=1_000_000_000,
-        fee_rate=0.0015,
-        reward_type="simple",
-        window_size=WINDOW_SIZE,
-        data_dict=test_data_dict,
-        features=FEATURES,
-        max_steps=100,
-        random_start=True
+    agent = PPOAgent(
+        model=model,
+        lr=cfg["learning_rate"],
+        gamma=cfg["gamma"],
+        gae_lambda=cfg["gae_lambda"],
+        clip_range=cfg["clip_range"],
+        ent_coef=cfg["ent_coef"],
+        vf_coef=cfg["vf_coef"],
+        max_grad_norm=cfg["max_grad_norm"],
+        target_kl=cfg["target_kl"],
+        n_epochs=cfg["n_epochs"],
+        batch_size=cfg["batch_size"],
+        device=cfg["device"],
     )
 
-    returns = []
-    portfolio_values = []
+    print(f"Device: {agent.device}")
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model params: {total_params:,}")
 
-    for episode in range(n_episodes):
-        obs, info = eval_env.reset()
-        done = False
-        episode_returns = []
-        episode_values = [eval_env.portfolio_value]
+    # ----------------------------------------------------------------
+    # 4. Logger
+    # ----------------------------------------------------------------
+    run_id = make_run_id("ppo")
+    logger = TrainingLogger(
+        run_id=run_id,
+        agent="PPO_LSTM",
+        config=cfg,
+    )
+    logger.info(f"Data split: {split.summary()}")
+    logger.info(f"Device: {agent.device} | Params: {total_params:,}")
 
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, done, truncated, info = eval_env.step(action)
-            episode_returns.append(reward)
-            episode_values.append(eval_env.portfolio_value)
-            done = done or truncated
+    # ----------------------------------------------------------------
+    # 5. Training loop
+    # ----------------------------------------------------------------
+    n_rollouts = cfg["total_timesteps"] // cfg["n_steps"]
+    episode_counter = 0
+    best_val_sharpe = -np.inf
+    obs = None
 
-        total_return = (eval_env.portfolio_value - eval_env.initial_balance) / eval_env.initial_balance
-        returns.append(total_return)
-        portfolio_values.append(episode_values)
+    save_dir = logger.get_run_dir() / "checkpoints"
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"Episode {episode+1}: Total Return = {total_return:.4f}")
+    for rollout in range(1, n_rollouts + 1):
+        # LR linear decay
+        if cfg["lr_decay"]:
+            progress = agent.total_steps / cfg["total_timesteps"]
+            new_lr = cfg["learning_rate"] * (1.0 - progress)
+            new_lr = max(new_lr, 1e-6)
+            agent.set_lr(new_lr)
 
-    # Tính metrics
-    avg_return = np.mean(returns)
-    std_return = np.std(returns)
-    sharpe_ratio = avg_return / std_return if std_return > 0 else 0
+        # Collect
+        obs, ep_infos = agent.collect_rollout(train_env, state_space, cfg["n_steps"], obs)
 
-    # Max drawdown
-    max_drawdowns = []
-    for values in portfolio_values:
-        peak = max(values)
-        drawdown = (peak - min(values)) / peak
-        max_drawdowns.append(drawdown)
-    avg_max_drawdown = np.mean(max_drawdowns)
+        # Update
+        update_stats = agent.update()
 
-    # Win rate
-    win_rate = np.mean([1 if r > 0 else 0 for r in returns])
+        # Log episodes
+        for ep in ep_infos:
+            episode_counter += 1
+            logger.log_episode(
+                episode=episode_counter,
+                total_reward=ep["total_reward"],
+                portfolio_value=ep["portfolio_value"],
+                total_return=ep["total_return"],
+                n_trades=ep["n_trades"],
+                total_cost=ep["total_cost"],
+                steps=ep["steps"],
+            )
 
-    print("\nEvaluation Results:")
-    print(f"Average Total Return: {avg_return:.4f}")
-    print(f"Sharpe Ratio: {sharpe_ratio:.4f}")
-    print(f"Average Max Drawdown: {avg_max_drawdown:.4f}")
-    print(f"Win Rate: {win_rate:.4f}")
+        # Log update
+        logger.log_train_step(
+            step=agent.total_steps,
+            policy_loss=update_stats["policy_loss"],
+            value_loss=update_stats["value_loss"],
+            entropy=update_stats["entropy"],
+            approx_kl=update_stats["approx_kl"],
+            clip_fraction=update_stats["clip_fraction"],
+            learning_rate=agent.get_lr(),
+        )
 
-    # # Dọn dẹp nếu tạo temp
-    # if test_data_path.startswith("./temp"):
-    #     shutil.rmtree(test_data_path, ignore_errors=True)
+        # Periodic info
+        if rollout % 5 == 0 or rollout == 1:
+            logger.info(
+                f"[Rollout {rollout}/{n_rollouts}] "
+                f"steps={agent.total_steps:,} | "
+                f"pi_loss={update_stats['policy_loss']:.5f} | "
+                f"v_loss={update_stats['value_loss']:.5f} | "
+                f"kl={update_stats['approx_kl']:.5f} | "
+                f"lr={agent.get_lr():.2e}"
+            )
 
-    return {
-        "avg_return": avg_return,
-        "sharpe_ratio": sharpe_ratio,
-        "avg_max_drawdown": avg_max_drawdown,
-        "win_rate": win_rate
-    }
+        # Periodic eval on val set
+        if rollout % cfg["eval_freq"] == 0:
+            val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
+            for i, pv in enumerate(val_values):
+                metrics = compute_all(pv, cfg["initial_balance"])
+                logger.log_eval(episode=episode_counter, metrics=metrics, split="val")
+
+                if i == 0:
+                    logger.info(f"\n{format_report(metrics)}")
+
+                    if metrics.get("sharpe_ratio", -999) > best_val_sharpe:
+                        best_val_sharpe = metrics["sharpe_ratio"]
+                        agent.save(str(save_dir / "best_model.pt"))
+                        logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
+
+        # Periodic checkpoint
+        if rollout % cfg["save_freq"] == 0:
+            agent.save(str(save_dir / f"checkpoint_{agent.total_steps}.pt"))
+
+    # ----------------------------------------------------------------
+    # 6. Final eval on test set (load best model)
+    # ----------------------------------------------------------------
+    best_path = save_dir / "best_model.pt"
+    if best_path.exists():
+        agent.load(str(best_path))
+        logger.info("Loaded best_model.pt for final test evaluation")
+
+    test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
+    test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]
+
+    avg_test = {}
+    for key in test_metrics_list[0]:
+        vals = [m[key] for m in test_metrics_list if key in m]
+        avg_test[key] = float(np.mean(vals))
+
+    logger.log_eval(episode=episode_counter, metrics=avg_test, split="test")
+    logger.info(f"\n=== FINAL TEST RESULTS (avg {len(test_values)} episodes) ===")
+    logger.info(f"\n{format_report(avg_test)}")
+
+    # ----------------------------------------------------------------
+    # 7. Summary
+    # ----------------------------------------------------------------
+    agent.save(str(save_dir / "final_model.pt"))
+    logger.save_summary(
+        metrics=avg_test,
+        extra={
+            "data_split": split.summary(),
+            "total_episodes": episode_counter,
+            "best_val_sharpe": best_val_sharpe,
+        },
+    )
+
+    return agent, avg_test
 
 
 if __name__ == "__main__":
-    # Chạy training
-    trained_model = train_ppo(total_timesteps=50000)
-
-    # Load test data để đánh giá
-    _, test_data = load_processed_data(DATA_PATH, TICKERS, 0.8)
-    eval_results = evaluate_ppo("saved_models/ppo_model", test_data)
+    train_ppo()

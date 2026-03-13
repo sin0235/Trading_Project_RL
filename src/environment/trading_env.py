@@ -21,7 +21,7 @@ class TradingEnv(gym.Env):
     Gymnasium-compatible trading environment cho thi truong chung khoan Viet Nam.
     Ho tro 2 che do:
         - "discrete": DQN (moi buoc chon 1 trong K*N hanh dong)
-        - "continuous": PPO (output vector [-1,1]^N)
+        - "continuous": PPO (output vector [0,1]^(N+1), N stocks + 1 cash)
     """
     metadata = {"render_modes": ["human"]}
 
@@ -172,9 +172,30 @@ class TradingEnv(gym.Env):
         "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "discrete":
             trade_amounts = decode_discrete_action(
-                action, self.n_stocks, self.min_shares, self.cash, self.holdings, prices
+                action, self.n_stocks, self.min_shares, self.cash, self.holdings, prices,
+                fee_rate=self.fee_rate,
             )
         else:
+            action = np.asarray(action, dtype=np.float32)
+            if action.ndim > 1:
+                action = np.squeeze(action)
+            if action.shape != (self.n_stocks + 1,):
+                raise ValueError(
+                    f"Continuous action shape {action.shape} != ({self.n_stocks + 1},)"
+                )
+
+            # Hỗ trợ tương thích ngược: nếu policy trả [-1, 1] thì map sang [0, 1]
+            if float(np.min(action)) < 0.0:
+                action = (action + 1.0) / 2.0
+
+            action = np.clip(action, 0.0, 1.0)
+            s = float(np.sum(action))
+            if not np.isfinite(s) or s <= 1e-8:
+                action = np.zeros(self.n_stocks + 1, dtype=np.float32)
+                action[-1] = 1.0
+            else:
+                action = action / s
+
             ratio = self.state_space.get_portfolio_state(self.cash, self.holdings, prices)
             trade_amounts = decode_continuous_action(action, ratio, self.cash, self.holdings, prices)
 
@@ -183,7 +204,7 @@ class TradingEnv(gym.Env):
         )
 
         total_fees = self._execute_trades(trade_amounts, prices)
-        # Cập nhật thống kê giao dịch
+        self.cash = max(0.0, self.cash)
         self.cost += total_fees
         self.trades += int(np.sum(np.abs(trade_amounts) > 0))
         "-------------------------------------END ACTION-------------------------------------------"

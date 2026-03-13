@@ -1,0 +1,65 @@
+tickers:
+  - ACB
+  - BID
+  - BVH
+  - CTG
+  - FPT
+  - GAS
+  - HPG
+  - MBB
+  - MSN
+  - MWG
+  - SHB
+  - SSI
+  - STB
+  - VCB
+  - VIC
+  - VNM
+
+features:
+  - close_norm
+  - return_1d
+  - return_5d
+  - macd
+  - rsi
+  - adx
+  - volume_norm
+
+window_size: 30
+
+train_ratio: 0.7
+val_ratio: 0.15
+test_ratio: 0.15
+
+initial_balance: 1000000000
+fee_rate: 0.0015
+max_steps_train: 200
+max_steps_eval: 9999
+reward_scaling: 0.0001
+
+hidden_size: 128
+num_layers: 2
+dropout: 0.1
+log_std_init: -0.5
+
+learning_rate: 0.0003
+n_steps: 2048
+batch_size: 256
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+target_kl: 0.03
+
+total_timesteps: 500000
+lr_decay: true
+eval_freq: 10
+save_freq: 50
+n_eval_episodes: 3
+
+seed: 42
+device: auto
+

@@ -1,0 +1,159 @@
+2026-03-13 13:53:12 [INFO] Run bắt đầu: ppo_20260313_135312 | Agent: PPO_LSTM | 2026-03-13 13:53:12
+2026-03-13 13:53:12 [INFO] Data split: {'train': {'start': '2015-01-05', 'end': '2022-09-16', 'days': 1917}, 'val': {'start': '2022-09-19', 'end': '2024-05-14', 'days': 411}, 'test': {'start': '2024-05-15', 'end': '2025-12-31', 'days': 412}}
+2026-03-13 13:53:12 [INFO] Device: cpu | Params: 311,331
+2026-03-13 13:53:39 [INFO] [Ep      1] reward=  -0.0010 | value=     944,945,384 | return= -5.51% | trades=3200 | cost=140,302,430
+2026-03-13 13:53:39 [INFO] [Ep      2] reward=  -0.0004 | value=   1,209,871,408 | return= 20.99% | trades=3200 | cost=169,961,591
+2026-03-13 13:53:39 [INFO] [Ep      3] reward=  -0.0012 | value=     941,837,742 | return= -5.82% | trades=3200 | cost=145,966,965
+2026-03-13 13:53:39 [INFO] [Ep      4] reward=  -0.0004 | value=   1,398,164,570 | return= 39.82% | trades=3200 | cost=176,102,719
+2026-03-13 13:53:39 [INFO] [Ep      5] reward=  -0.0010 | value=     889,583,585 | return=-11.04% | trades=3200 | cost=142,522,701
+2026-03-13 13:53:39 [INFO] [Ep      6] reward=  -0.0010 | value=     796,728,873 | return=-20.33% | trades=3200 | cost=142,909,863
+2026-03-13 13:53:39 [INFO] [Ep      7] reward=  -0.0009 | value=     846,257,893 | return=-15.37% | trades=3200 | cost=142,575,157
+2026-03-13 13:53:39 [INFO] [Ep      8] reward=  -0.0009 | value=     774,496,225 | return=-22.55% | trades=3199 | cost=150,038,539
+2026-03-13 13:53:39 [INFO] [Ep      9] reward=  -0.0009 | value=     927,636,252 | return= -7.24% | trades=3200 | cost=142,051,659
+2026-03-13 13:53:39 [INFO] [Ep     10] reward=  -0.0001 | value=   1,191,138,193 | return= 19.11% | trades=3200 | cost=167,778,840
+2026-03-13 13:53:39 [DEBUG] [Step     2048] pi_loss=-0.04741 | v_loss= 0.07222 | entropy=32.84126 | kl=0.01506 | clip=0.221 | lr=3.00e-04
+2026-03-13 13:53:39 [INFO] [Rollout 1/244] steps=2,048 | pi_loss=-0.04741 | v_loss=0.07222 | kl=0.01506 | lr=3.00e-04
+2026-03-13 13:54:04 [INFO] [Ep     11] reward=  -0.0006 | value=   1,049,449,005 | return=  4.94% | trades=3199 | cost=144,288,038
+2026-03-13 13:54:04 [INFO] [Ep     12] reward=  -0.0004 | value=   1,141,223,373 | return= 14.12% | trades=3200 | cost=168,304,519
+2026-03-13 13:54:04 [INFO] [Ep     13] reward=  -0.0015 | value=     988,030,173 | return= -1.20% | trades=3200 | cost=164,570,239
+2026-03-13 13:54:04 [INFO] [Ep     14] reward=  -0.0011 | value=     771,277,836 | return=-22.87% | trades=3200 | cost=137,189,154
+2026-03-13 13:54:04 [INFO] [Ep     15] reward=  -0.0004 | value=   1,204,734,001 | return= 20.47% | trades=3200 | cost=171,048,495
+2026-03-13 13:54:04 [INFO] [Ep     16] reward=  -0.0009 | value=     904,854,640 | return= -9.51% | trades=3200 | cost=144,451,342
+2026-03-13 13:54:04 [INFO] [Ep     17] reward=  -0.0009 | value=   1,045,871,203 | return=  4.59% | trades=3200 | cost=189,663,489
+2026-03-13 13:54:04 [INFO] [Ep     18] reward=  -0.0002 | value=   1,124,979,775 | return= 12.50% | trades=3200 | cost=166,078,734
+2026-03-13 13:54:04 [INFO] [Ep     19] reward=  -0.0002 | value=   1,532,590,082 | return= 53.26% | trades=3200 | cost=174,027,087
+2026-03-13 13:54:04 [INFO] [Ep     20] reward=  -0.0002 | value=   1,541,234,339 | return= 54.12% | trades=3200 | cost=190,389,603
+2026-03-13 13:54:04 [DEBUG] [Step     4096] pi_loss=-0.05845 | v_loss= 0.02982 | entropy=32.90767 | kl=0.02344 | clip=0.313 | lr=2.99e-04
+2026-03-13 13:54:36 [INFO] [Ep     21] reward=  -0.0003 | value=     962,694,749 | return= -3.73% | trades=3200 | cost=147,298,577
+2026-03-13 13:54:36 [INFO] [Ep     22] reward=  -0.0024 | value=     655,407,777 | return=-34.46% | trades=3200 | cost=117,003,345
+2026-03-13 13:54:36 [INFO] [Ep     23] reward=  -0.0002 | value=   1,270,362,897 | return= 27.04% | trades=3199 | cost=161,157,608
+2026-03-13 13:54:36 [INFO] [Ep     24] reward=  -0.0002 | value=   1,389,594,059 | return= 38.96% | trades=3200 | cost=167,160,068
+2026-03-13 13:54:36 [INFO] [Ep     25] reward=  -0.0002 | value=   1,309,779,613 | return= 30.98% | trades=3200 | cost=171,215,426
+2026-03-13 13:54:36 [INFO] [Ep     26] reward=  -0.0005 | value=     923,501,169 | return= -7.65% | trades=3200 | cost=145,718,165
+2026-03-13 13:54:36 [INFO] [Ep     27] reward=  -0.0002 | value=   1,449,109,504 | return= 44.91% | trades=3200 | cost=180,380,571
+2026-03-13 13:54:36 [INFO] [Ep     28] reward=  -0.0002 | value=   1,077,948,143 | return=  7.79% | trades=3199 | cost=155,413,500
+2026-03-13 13:54:36 [INFO] [Ep     29] reward=  -0.0006 | value=     883,538,007 | return=-11.65% | trades=3199 | cost=142,959,346
+2026-03-13 13:54:36 [INFO] [Ep     30] reward=  -0.0005 | value=     920,007,974 | return= -8.00% | trades=3200 | cost=151,352,856
+2026-03-13 13:54:36 [DEBUG] [Step     6144] pi_loss=-0.04750 | v_loss= 0.01745 | entropy=32.91258 | kl=0.02717 | clip=0.352 | lr=2.98e-04
+2026-03-13 13:54:58 [INFO] [Ep     31] reward=  -0.0005 | value=     859,840,260 | return=-14.02% | trades=3200 | cost=138,571,107
+2026-03-13 13:54:58 [INFO] [Ep     32] reward=  -0.0004 | value=   1,242,609,017 | return= 24.26% | trades=3200 | cost=182,835,128
+2026-03-13 13:54:58 [INFO] [Ep     33] reward=  -0.0011 | value=   1,061,144,150 | return=  6.11% | trades=3200 | cost=148,740,435
+2026-03-13 13:54:58 [INFO] [Ep     34] reward=  -0.0020 | value=     800,082,515 | return=-19.99% | trades=3198 | cost=134,912,826
+2026-03-13 13:54:58 [INFO] [Ep     35] reward=  -0.0009 | value=   1,130,629,072 | return= 13.06% | trades=3200 | cost=142,597,645
+2026-03-13 13:54:58 [INFO] [Ep     36] reward=  -0.0016 | value=     881,928,810 | return=-11.81% | trades=3200 | cost=150,715,263
+2026-03-13 13:54:58 [INFO] [Ep     37] reward=  -0.0002 | value=   1,545,210,413 | return= 54.52% | trades=3200 | cost=199,172,650
+2026-03-13 13:54:58 [INFO] [Ep     38] reward=  -0.0004 | value=   1,216,379,931 | return= 21.64% | trades=3200 | cost=174,487,496
+2026-03-13 13:54:58 [INFO] [Ep     39] reward=  -0.0009 | value=     784,166,385 | return=-21.58% | trades=3200 | cost=143,170,777
+2026-03-13 13:54:58 [INFO] [Ep     40] reward=  -0.0012 | value=     818,810,389 | return=-18.12% | trades=3200 | cost=139,138,310
+2026-03-13 13:54:58 [DEBUG] [Step     8192] pi_loss=-0.03762 | v_loss= 0.01272 | entropy=33.00838 | kl=0.02663 | clip=0.337 | lr=2.96e-04
+2026-03-13 13:55:20 [INFO] [Ep     41] reward=  -0.0000 | value=     973,089,101 | return= -2.69% | trades=3200 | cost=150,266,573
+2026-03-13 13:55:20 [INFO] [Ep     42] reward=  -0.0005 | value=   1,067,978,117 | return=  6.80% | trades=3200 | cost=147,649,273
+2026-03-13 13:55:20 [INFO] [Ep     43] reward=  -0.0023 | value=     663,920,331 | return=-33.61% | trades=3200 | cost=122,568,767
+2026-03-13 13:55:20 [INFO] [Ep     44] reward=  -0.0001 | value=   1,480,658,289 | return= 48.07% | trades=3200 | cost=178,870,049
+2026-03-13 13:55:20 [INFO] [Ep     45] reward=  -0.0004 | value=   1,317,114,099 | return= 31.71% | trades=3199 | cost=201,590,658
+2026-03-13 13:55:20 [INFO] [Ep     46] reward=  -0.0008 | value=     913,756,148 | return= -8.62% | trades=3200 | cost=149,170,022
+2026-03-13 13:55:20 [INFO] [Ep     47] reward=  -0.0006 | value=     810,877,022 | return=-18.91% | trades=3200 | cost=155,995,568
+2026-03-13 13:55:20 [INFO] [Ep     48] reward=  -0.0012 | value=     860,419,422 | return=-13.96% | trades=3200 | cost=138,735,745
+2026-03-13 13:55:20 [INFO] [Ep     49] reward=  -0.0007 | value=   1,038,922,167 | return=  3.89% | trades=3200 | cost=162,485,721
+2026-03-13 13:55:20 [INFO] [Ep     50] reward=  -0.0009 | value=     686,598,479 | return=-31.34% | trades=3200 | cost=144,412,219
+2026-03-13 13:55:20 [INFO] [Ep     51] reward=  -0.0002 | value=   1,100,062,999 | return= 10.01% | trades=3200 | cost=159,722,560
+2026-03-13 13:55:20 [DEBUG] [Step    10240] pi_loss=-0.04238 | v_loss= 0.01112 | entropy=33.09069 | kl=0.02952 | clip=0.357 | lr=2.95e-04
+2026-03-13 13:55:20 [INFO] [Rollout 5/244] steps=10,240 | pi_loss=-0.04238 | v_loss=0.01112 | kl=0.02952 | lr=2.95e-04
+2026-03-13 13:55:36 [INFO] [Ep     52] reward=  -0.0011 | value=     846,301,216 | return=-15.37% | trades=3200 | cost=137,332,783
+2026-03-13 13:55:36 [INFO] [Ep     53] reward=  -0.0009 | value=   1,118,880,906 | return= 11.89% | trades=3199 | cost=187,690,642
+2026-03-13 13:55:36 [INFO] [Ep     54] reward=  -0.0007 | value=     956,342,423 | return= -4.37% | trades=3200 | cost=153,603,274
+2026-03-13 13:55:36 [INFO] [Ep     55] reward=  -0.0017 | value=     803,400,919 | return=-19.66% | trades=3200 | cost=132,607,917
+2026-03-13 13:55:36 [INFO] [Ep     56] reward=  -0.0010 | value=     918,129,736 | return= -8.19% | trades=3200 | cost=138,321,590
+2026-03-13 13:55:36 [INFO] [Ep     57] reward=  -0.0002 | value=   1,629,808,414 | return= 62.98% | trades=3200 | cost=199,992,398
+2026-03-13 13:55:36 [INFO] [Ep     58] reward=  -0.0006 | value=   1,011,866,395 | return=  1.19% | trades=3200 | cost=156,821,453
+2026-03-13 13:55:36 [INFO] [Ep     59] reward=  -0.0001 | value=   1,220,576,519 | return= 22.06% | trades=3200 | cost=173,227,234
+2026-03-13 13:55:36 [INFO] [Ep     60] reward=  -0.0013 | value=     909,473,845 | return= -9.05% | trades=3200 | cost=152,491,290
+2026-03-13 13:55:36 [INFO] [Ep     61] reward=  -0.0004 | value=   1,254,837,138 | return= 25.48% | trades=3200 | cost=192,356,273
+2026-03-13 13:55:36 [DEBUG] [Step    12288] pi_loss=-0.03254 | v_loss= 0.00921 | entropy=33.11395 | kl=0.02811 | clip=0.364 | lr=2.94e-04
+2026-03-13 13:55:54 [INFO] [Ep     62] reward=  -0.0007 | value=     904,872,674 | return= -9.51% | trades=3200 | cost=137,176,246
+2026-03-13 13:55:54 [INFO] [Ep     63] reward=  -0.0009 | value=     838,530,886 | return=-16.15% | trades=3200 | cost=145,773,737
+2026-03-13 13:55:54 [INFO] [Ep     64] reward=  -0.0006 | value=   1,120,908,270 | return= 12.09% | trades=3200 | cost=169,068,775
+2026-03-13 13:55:54 [INFO] [Ep     65] reward=  -0.0003 | value=   1,175,542,899 | return= 17.55% | trades=3200 | cost=185,057,427
+2026-03-13 13:55:54 [INFO] [Ep     66] reward=  -0.0009 | value=   1,023,269,496 | return=  2.33% | trades=3200 | cost=155,816,804
+2026-03-13 13:55:54 [INFO] [Ep     67] reward=  -0.0009 | value=     802,013,935 | return=-19.80% | trades=3199 | cost=142,190,726
+2026-03-13 13:55:54 [INFO] [Ep     68] reward=  -0.0014 | value=     824,803,361 | return=-17.52% | trades=3200 | cost=134,632,210
+2026-03-13 13:55:54 [INFO] [Ep     69] reward=  -0.0011 | value=     882,526,963 | return=-11.75% | trades=3200 | cost=144,836,861
+2026-03-13 13:55:54 [INFO] [Ep     70] reward=  -0.0006 | value=     886,964,776 | return=-11.30% | trades=3200 | cost=150,994,459
+2026-03-13 13:55:54 [INFO] [Ep     71] reward=  -0.0007 | value=     970,308,759 | return= -2.97% | trades=3200 | cost=140,791,289
+2026-03-13 13:55:54 [DEBUG] [Step    14336] pi_loss=-0.02142 | v_loss= 0.00798 | entropy=33.15818 | kl=0.02812 | clip=0.355 | lr=2.93e-04
+2026-03-13 13:56:20 [INFO] [Ep     72] reward=  -0.0007 | value=     844,653,707 | return=-15.53% | trades=3200 | cost=139,631,158
+2026-03-13 13:56:20 [INFO] [Ep     73] reward=  -0.0009 | value=     862,454,462 | return=-13.75% | trades=3199 | cost=142,249,631
+2026-03-13 13:56:20 [INFO] [Ep     74] reward=  -0.0009 | value=     884,689,537 | return=-11.53% | trades=3200 | cost=144,677,680
+2026-03-13 13:56:20 [INFO] [Ep     75] reward=  -0.0018 | value=     807,007,276 | return=-19.30% | trades=3199 | cost=132,584,997
+2026-03-13 13:56:20 [INFO] [Ep     76] reward=  -0.0013 | value=     850,830,628 | return=-14.92% | trades=3200 | cost=138,338,681
+2026-03-13 13:56:20 [INFO] [Ep     77] reward=  -0.0003 | value=   1,434,074,010 | return= 43.41% | trades=3200 | cost=175,375,911
+2026-03-13 13:56:20 [INFO] [Ep     78] reward=  -0.0007 | value=   1,071,937,733 | return=  7.19% | trades=3200 | cost=164,677,473
+2026-03-13 13:56:20 [INFO] [Ep     79] reward=  -0.0012 | value=     897,609,130 | return=-10.24% | trades=3199 | cost=150,423,560
+2026-03-13 13:56:20 [INFO] [Ep     80] reward=  -0.0016 | value=     828,999,896 | return=-17.10% | trades=3199 | cost=135,390,168
+2026-03-13 13:56:20 [INFO] [Ep     81] reward=  -0.0002 | value=   1,229,624,255 | return= 22.96% | trades=3200 | cost=165,206,108
+2026-03-13 13:56:20 [DEBUG] [Step    16384] pi_loss=-0.03120 | v_loss= 0.00692 | entropy=33.21004 | kl=0.02814 | clip=0.357 | lr=2.91e-04
+2026-03-13 13:56:51 [INFO] [Ep     82] reward=  -0.0001 | value=     836,399,477 | return=-16.36% | trades=3200 | cost=139,662,534
+2026-03-13 13:56:51 [INFO] [Ep     83] reward=  -0.0006 | value=     920,524,864 | return= -7.95% | trades=3200 | cost=149,441,325
+2026-03-13 13:56:51 [INFO] [Ep     84] reward=  -0.0003 | value=   1,352,447,742 | return= 35.24% | trades=3200 | cost=181,510,204
+2026-03-13 13:56:51 [INFO] [Ep     85] reward=  -0.0009 | value=   1,077,308,196 | return=  7.73% | trades=3200 | cost=146,352,027
+2026-03-13 13:56:51 [INFO] [Ep     86] reward=  -0.0008 | value=     876,920,999 | return=-12.31% | trades=3200 | cost=139,129,280
+2026-03-13 13:56:51 [INFO] [Ep     87] reward=  -0.0006 | value=   1,102,648,205 | return= 10.26% | trades=3200 | cost=167,933,137
+2026-03-13 13:56:51 [INFO] [Ep     88] reward=  -0.0002 | value=   1,573,239,261 | return= 57.32% | trades=3200 | cost=195,131,772
+2026-03-13 13:56:51 [INFO] [Ep     89] reward=  -0.0009 | value=     881,206,004 | return=-11.88% | trades=3200 | cost=148,992,772
+2026-03-13 13:56:51 [INFO] [Ep     90] reward=  -0.0010 | value=     826,534,765 | return=-17.35% | trades=3200 | cost=140,348,833
+2026-03-13 13:56:51 [INFO] [Ep     91] reward=  -0.0002 | value=   1,558,827,813 | return= 55.88% | trades=3200 | cost=176,841,888
+2026-03-13 13:56:51 [INFO] [Ep     92] reward=  -0.0006 | value=   1,122,686,879 | return= 12.27% | trades=3200 | cost=159,351,399
+2026-03-13 13:56:51 [DEBUG] [Step    18432] pi_loss=-0.04069 | v_loss= 0.00497 | entropy=33.23973 | kl=0.03002 | clip=0.375 | lr=2.90e-04
+2026-03-13 13:57:18 [INFO] [Ep     93] reward=  -0.0010 | value=     850,810,799 | return=-14.92% | trades=3199 | cost=142,580,809
+2026-03-13 13:57:18 [INFO] [Ep     94] reward=  -0.0009 | value=     876,803,913 | return=-12.32% | trades=3200 | cost=148,070,332
+2026-03-13 13:57:18 [INFO] [Ep     95] reward=  -0.0009 | value=     816,775,429 | return=-18.32% | trades=3200 | cost=141,932,098
+2026-03-13 13:57:18 [INFO] [Ep     96] reward=  -0.0005 | value=     987,097,576 | return= -1.29% | trades=3200 | cost=154,313,380
+2026-03-13 13:57:18 [INFO] [Ep     97] reward=  -0.0007 | value=   1,002,166,993 | return=  0.22% | trades=3200 | cost=154,496,496
+2026-03-13 13:57:18 [INFO] [Ep     98] reward=  -0.0008 | value=   1,105,913,910 | return= 10.59% | trades=3200 | cost=150,496,484
+2026-03-13 13:57:18 [INFO] [Ep     99] reward=  -0.0007 | value=     956,314,160 | return= -4.37% | trades=3200 | cost=151,919,098
+2026-03-13 13:57:18 [INFO] [Ep    100] reward=  -0.0002 | value=   1,177,474,866 | return= 17.75% | trades=3200 | cost=172,779,948
+2026-03-13 13:57:18 [INFO] [Ep    101] reward=  -0.0007 | value=     964,540,840 | return= -3.55% | trades=3200 | cost=152,780,078
+2026-03-13 13:57:18 [INFO] [Ep    102] reward=  -0.0002 | value=   1,096,823,299 | return=  9.68% | trades=3200 | cost=161,921,783
+2026-03-13 13:57:18 [DEBUG] [Step    20480] pi_loss=-0.02821 | v_loss= 0.00449 | entropy=33.35061 | kl=0.03038 | clip=0.367 | lr=2.89e-04
+2026-03-13 13:57:18 [INFO] [Rollout 10/244] steps=20,480 | pi_loss=-0.02821 | v_loss=0.00449 | kl=0.03038 | lr=2.89e-04
+2026-03-13 13:57:26 [INFO] [EVAL/VAL Ep 102] total_return=34.32% | sharpe=0.8587 | max_dd=17.03% | win_rate=56.43%
+2026-03-13 13:57:26 [INFO] 
+=======================================================
+                  PERFORMANCE REPORT                   
+=======================================================
+  Vốn ban đầu          :      1,000,000,000 VND
+  Giá trị cuối kỳ      :      1,343,249,438 VND
+-------------------------------------------------------
+  Tổng lợi nhuận       :            34.32%
+  Lợi nhuận hàng năm   :            21.55%
+  Biến động hàng năm   :            19.77%
+-------------------------------------------------------
+  Sharpe Ratio         :            0.8587
+  Sortino Ratio        :            0.8167
+  Calmar Ratio         :            1.2657
+-------------------------------------------------------
+  Max Drawdown         :            17.03%
+  MDD Duration (steps) :               111
+-------------------------------------------------------
+  Win Rate             :            56.43%
+  Profit Factor        :            1.2166
+  Skewness             :           -0.2619
+  Kurtosis             :            3.0261
+-------------------------------------------------------
+  VaR 95%              :            0.0183
+  CVaR 95%             :            0.0299
+=======================================================
+2026-03-13 13:57:26 [INFO] Best val Sharpe: 0.8587 -> saved best_model.pt
+2026-03-13 13:57:26 [INFO] [EVAL/VAL Ep 102] total_return=34.32% | sharpe=0.8587 | max_dd=17.03% | win_rate=56.43%
+2026-03-13 13:57:26 [INFO] [EVAL/VAL Ep 102] total_return=34.32% | sharpe=0.8587 | max_dd=17.03% | win_rate=56.43%
+2026-03-13 13:57:53 [INFO] [Ep    103] reward=  -0.0011 | value=     792,707,281 | return=-20.73% | trades=3200 | cost=142,965,325
+2026-03-13 13:57:53 [INFO] [Ep    104] reward=  -0.0012 | value=     886,009,592 | return=-11.40% | trades=3200 | cost=154,598,863
+2026-03-13 13:57:53 [INFO] [Ep    105] reward=  -0.0014 | value=     844,813,286 | return=-15.52% | trades=3199 | cost=139,977,256
+2026-03-13 13:57:53 [INFO] [Ep    106] reward=  -0.0009 | value=   1,084,212,326 | return=  8.42% | trades=3200 | cost=142,241,350
+2026-03-13 13:57:53 [INFO] [Ep    107] reward=  -0.0012 | value=     835,778,955 | return=-16.42% | trades=3200 | cost=137,749,024
+2026-03-13 13:57:53 [INFO] [Ep    108] reward=  -0.0008 | value=     906,434,322 | return= -9.36% | trades=3200 | cost=139,570,667
+2026-03-13 13:57:53 [INFO] [Ep    109] reward=  -0.0002 | value=   1,495,506,535 | return= 49.55% | trades=3200 | cost=192,017,173
+2026-03-13 13:57:53 [INFO] [Ep    110] reward=  -0.0008 | value=     800,603,575 | return=-19.94% | trades=3200 | cost=146,543,398
+2026-03-13 13:57:53 [INFO] [Ep    111] reward=  -0.0003 | value=   1,547,936,584 | return= 54.79% | trades=3200 | cost=186,486,321
+2026-03-13 13:57:53 [INFO] [Ep    112] reward=  -0.0009 | value=     891,227,715 | return=-10.88% | trades=3199 | cost=147,383,102
+2026-03-13 13:57:53 [DEBUG] [Step    22528] pi_loss=-0.03689 | v_loss= 0.00471 | entropy=33.38194 | kl=0.02845 | clip=0.351 | lr=2.88e-04

@@ -306,10 +306,10 @@ class PPOLSTMActorCritic(nn.Module):
     """
     PPO Actor-Critic với LSTM cho Continuous Action Space.
 
-    Actor: mean không giới hạn (không dùng Tanh), clamp chỉ khi gửi action
-    cho environment. log_std được clamp trong [-20, 2] trước khi exp().
-    get_action() trả về raw_action (chưa clamp) để lưu buffer; evaluate_actions()
-    nhận raw_actions để log_prob nhất quán.
+    Actor: mean không giới hạn. Action thực thi được squash qua tanh rồi scale
+    về [0, 1] cho vector tỷ trọng mục tiêu (N stocks + 1 cash).
+    get_action() trả về pre_squash_action để lưu buffer; evaluate_actions()
+    nhận pre_squash_action để log_prob nhất quán.
 
     Architecture:
         market_state → LSTM → lstm_features (128)
@@ -318,7 +318,7 @@ class PPOLSTMActorCritic(nn.Module):
                               ↓                ↓
                          Actor Head       Critic Head
                               ↓                ↓
-                     mean (n_stocks)     value (1)
+                   mean (n_stocks + 1)   value (1)
                      [không giới hạn]
     """
 
@@ -364,12 +364,12 @@ class PPOLSTMActorCritic(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, n_stocks),
+            nn.Linear(hidden_size // 2, n_stocks + 1),
         )
 
         # Độ lệch chuẩn log — tham số học được
         self.log_std = nn.Parameter(
-            torch.ones(n_stocks) * log_std_init
+            torch.ones(n_stocks + 1) * log_std_init
         )
 
         # Critic: đầu ra giá trị trạng thái V(s)
@@ -397,8 +397,8 @@ class PPOLSTMActorCritic(nn.Module):
             hidden: (h_0, c_0) hoặc None
 
         Returns:
-            action_mean: (batch, n_stocks) — không giới hạn
-            action_std: (batch, n_stocks)
+            action_mean: (batch, n_stocks + 1) — không giới hạn
+            action_std: (batch, n_stocks + 1)
             value: (batch, 1)
             new_hidden: (h_n, c_n)
         """
@@ -431,13 +431,13 @@ class PPOLSTMActorCritic(nn.Module):
                    hidden: tuple = None) -> tuple:
         """
         Lấy mẫu action từ policy (khi tương tác với environment).
-        Trả về raw_action (chưa clamp) để lưu buffer; evaluate_actions() dùng
-        raw_action để tính log_prob chính xác.
+        Trả về pre_squash_action để lưu buffer; evaluate_actions() dùng
+        pre_squash_action để tính log_prob nhất quán (có correction).
 
         Returns:
-            action: (batch, n_stocks) — đã clamp về [-1, 1], gửi cho env
-            raw_action: (batch, n_stocks) — chưa clamp, lưu vào buffer
-            log_prob: (batch,) — tính trên raw_action
+            action: (batch, n_stocks + 1) — đã squash về [0, 1], gửi cho env
+            pre_squash_action: (batch, n_stocks + 1) — lưu vào buffer
+            log_prob: (batch,) — log_prob của action sau squash
             value: (batch, 1)
             new_hidden: (h_n, c_n)
         """
@@ -446,13 +446,16 @@ class PPOLSTMActorCritic(nn.Module):
         )
 
         dist = Normal(action_mean, action_std)
-        raw_action = dist.rsample()
+        pre_squash_action = dist.rsample()
 
-        log_prob = dist.log_prob(raw_action).sum(dim=-1)
-        # Clamp chỉ để gửi cho environment
-        action = torch.clamp(raw_action, -1.0, 1.0)
+        squashed = torch.tanh(pre_squash_action)
+        action = (squashed + 1.0) / 2.0
 
-        return action, raw_action, log_prob, value, new_hidden
+        log_prob_pre = dist.log_prob(pre_squash_action).sum(dim=-1)
+        log_det = torch.log(0.5 * (1.0 - squashed.pow(2)) + 1e-6).sum(dim=-1)
+        log_prob = log_prob_pre - log_det
+
+        return action, pre_squash_action, log_prob, value, new_hidden
 
     def evaluate_actions(self, market_state: torch.Tensor,
                          portfolio_state: torch.Tensor,
@@ -468,7 +471,7 @@ class PPOLSTMActorCritic(nn.Module):
         Args:
             market_state: (batch, seq_len, input_size)
             portfolio_state: (batch, portfolio_dim)
-            raw_actions: (batch, n_stocks) — raw actions chưa clamp từ get_action()
+            raw_actions: (batch, n_stocks + 1) — pre_squash_action từ get_action()
             hidden: (h_0, c_0) — nên là stored hidden state
 
         Returns:
@@ -483,7 +486,12 @@ class PPOLSTMActorCritic(nn.Module):
 
         dist = Normal(action_mean, action_std)
 
-        log_probs = dist.log_prob(raw_actions).sum(dim=-1)
-        entropy = dist.entropy().sum(dim=-1)
+        squashed = torch.tanh(raw_actions)
+        log_probs_pre = dist.log_prob(raw_actions).sum(dim=-1)
+        log_det = torch.log(0.5 * (1.0 - squashed.pow(2)) + 1e-6).sum(dim=-1)
+        log_probs = log_probs_pre - log_det
+
+        # Entropy loss
+        entropy = dist.entropy().sum(dim=-1) - log_det
 
         return log_probs, entropy, values, new_hidden

@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import os
 from src.constants import WINDOW_SIZE, DATA_PATH, FEATURES
 
@@ -95,11 +95,9 @@ class StateSpace:
         cash: so tien mat hien co
         prices: gia co phieu tai thoi diem hien tai
 
-        tra ve vector co 1 + n_stocks chieu, gom:
-        - cash_ratio: ti le tien mat so voi portfolio value
-        - holdings_ratio_0: ti le von dang nam giu so voi portfolio value
-        - ...
-        - holdings_ratio_n: ti le von dang nam giu so voi portfolio value
+        tra ve vector co 1 + n_stocks chieu, theo thu tu:
+        - holdings_ratio_0..holdings_ratio_(n-1): ti le von dang nam giu so voi portfolio value
+        - cash_ratio: ti le tien mat so voi portfolio value (nam o cuoi de phu hop action N+1)
         """
         portfolio_value = cash + np.sum(holdings * prices)
         if portfolio_value <= 0:
