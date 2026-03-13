@@ -20,7 +20,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.constants import TICKERS, FEATURES, WINDOW_SIZE
+from src.constants import TICKERS, FEATURES, WINDOW_SIZE, DATA_PATH
 from src.models.lstm import PPOLSTMActorCritic
 from src.agents.ppo_agent import PPOAgent
 from src.environment.trading_env import TradingEnv
@@ -34,6 +34,8 @@ DEFAULT_CONFIG = {
     "tickers": TICKERS,
     "features": FEATURES,
     "window_size": WINDOW_SIZE,
+    # Đường dẫn mặc định trên máy local; trên Kaggle sẽ override bằng config
+    "data_path": DATA_PATH,
     "train_ratio": 0.7,
     "val_ratio": 0.15,
     "test_ratio": 0.15,
@@ -108,7 +110,7 @@ def train_ppo(config: dict = None):
     # ----------------------------------------------------------------
     # 1. Load & split data
     # ----------------------------------------------------------------
-    data_dict = load_data(tickers=cfg["tickers"])
+    data_dict = load_data(tickers=cfg["tickers"], data_path=cfg["data_path"])
     split = split_by_ratio(
         data_dict,
         train_ratio=cfg["train_ratio"],

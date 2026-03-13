@@ -27,6 +27,8 @@ features:
 
 window_size: 30
 
+data_path: data/processed
+
 train_ratio: 0.7
 val_ratio: 0.15
 test_ratio: 0.15
