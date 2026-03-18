@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     Gymnasium-compatible trading environment cho thi truong chung khoan Viet Nam.
     Ho tro 2 che do:
-        - "discrete": DQN (moi buoc chon 1 trong K*N hanh dong)
+        - "discrete": DRQN/DQN (ho tro scalar action 0..K*N-1 va legacy per-stock vector)
         - "continuous": PPO (output vector [0,1]^(N+1), N stocks + 1 cash)
     """
     metadata = {"render_modes": ["human"]}
@@ -79,6 +79,12 @@ class TradingEnv(gym.Env):
         self.k = 3
         self.max_t = self.state_space.n_days - 1
 
+        if self.state_space.max_steps < 1:
+            raise ValueError(
+                "TradingEnv requires at least window_size + 1 common trading days "
+                f"(got n_days={self.state_space.n_days}, window_size={self.state_space.window_size})."
+            )
+
         # Giới hạn số bước trên mỗi episode để không vượt quá độ dài dữ liệu
         # và tránh truy cập ngoài range khi hết data (vấn đề trading_env cũ gặp phải).
         self.max_steps = min(max_steps, self.state_space.max_steps)
@@ -92,7 +98,7 @@ class TradingEnv(gym.Env):
         )
 
         if self.mode == "discrete":
-            self.action_space = spaces.MultiDiscrete([self.k] * self.n_stocks)
+            self.action_space = spaces.Discrete(self.k * self.n_stocks)
         elif self.mode == "continuous":
             self.action_space = spaces.Box(
                 low=0, high=1.0,
@@ -105,6 +111,7 @@ class TradingEnv(gym.Env):
         self.cash = None
         self.holdings = None
         self.portfolio_value = None
+        self._terminated = False
         self.cost = 0
         self.trades = 0
         self.episode = 0
@@ -121,9 +128,8 @@ class TradingEnv(gym.Env):
         if self.random_start:
             min_t = self.state_space.window_size - 1
             # Đảm bảo episode có thể chạy tối đa self.max_steps bước mà không vượt quá self.max_t
-            max_start_t = self.max_t - (self.max_steps - 1)
-            max_start_t = max(min_t, max_start_t)
-            self.t = np.random.randint(min_t, max_start_t + 1)
+            max_start_t = self.max_t - self.max_steps
+            self.t = int(self.np_random.integers(min_t, max_start_t + 1))
         else:
             self.t = self.state_space.window_size - 1
 
@@ -148,6 +154,7 @@ class TradingEnv(gym.Env):
 
         self.reward_fn.reset()
         self.current_step = 0
+        self._terminated = False
         self.cost = 0
         self.trades = 0
         self.rewards_memory = []
@@ -165,12 +172,20 @@ class TradingEnv(gym.Env):
         return obs, info
 
     def step(self, action):
+        if self.t is None:
+            raise RuntimeError("Environment must be reset before calling step().")
+        if self._terminated:
+            raise RuntimeError("Episode already terminated. Call reset() before stepping again.")
+        if self.t >= self.max_t:
+            raise RuntimeError("Cannot step from the last available trading day. Call reset().")
+
         self.current_step += 1
         prices = self.state_space.get_prices(self.t)
         v_old = self.cash + np.sum(self.holdings * prices)
 
         "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "discrete":
+            action = self._normalize_discrete_action(action)
             trade_amounts = decode_discrete_action(
                 action, self.n_stocks, self.min_shares, self.cash, self.holdings, prices,
                 fee_rate=self.fee_rate,
@@ -216,7 +231,7 @@ class TradingEnv(gym.Env):
         v_new = self.cash + np.sum(self.holdings * new_prices)
         self.portfolio_value = v_new
 
-        reward = self.reward_fn.calculate(v_old, v_new)
+        reward = self.reward_fn.calculate(v_old, v_new, trade_amounts)
         # Scale reward giống FinRL
         reward = reward * self.reward_scaling
 
@@ -230,6 +245,7 @@ class TradingEnv(gym.Env):
 
         terminated = (self.t >= self.max_t) or (self.current_step >= self.max_steps) or (v_new <= 0)
         truncated = False
+        self._terminated = terminated or truncated
 
         info = self._build_info(new_prices, trade_amounts, total_fees)
 
@@ -272,6 +288,33 @@ class TradingEnv(gym.Env):
                 plt.close()
 
         return obs, float(reward), terminated, truncated, info
+
+    def _normalize_discrete_action(self, action) -> np.ndarray:
+        """
+        Chuan hoa action discrete ve dang vector per-stock:
+        - scalar int trong [0, k*n_stocks): chi tac dong len 1 ma, cac ma khac hold
+        - vector/list/ndarray do dai n_stocks: legacy mode
+        """
+        if np.isscalar(action):
+            action_idx = int(action)
+            if action_idx < 0 or action_idx >= self.k * self.n_stocks:
+                raise ValueError(
+                    f"Discrete action index {action_idx} out of range [0, {self.k * self.n_stocks - 1}]"
+                )
+            normalized = np.ones(self.n_stocks, dtype=np.int64)
+            stock_idx = action_idx // self.k
+            decision = action_idx % self.k
+            normalized[stock_idx] = decision
+            return normalized
+
+        normalized = np.asarray(action, dtype=np.int64)
+        if normalized.shape != (self.n_stocks,):
+            raise ValueError(
+                f"Discrete action shape {normalized.shape} != ({self.n_stocks},)"
+            )
+        if np.any((normalized < 0) | (normalized >= self.k)):
+            raise ValueError(f"Discrete action values must be in [0, {self.k - 1}]")
+        return normalized
 
     def _execute_trades(self, trade_amounts: np.ndarray,
                         prices: np.ndarray) -> float:

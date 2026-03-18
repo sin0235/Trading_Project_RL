@@ -170,4 +170,4 @@ class StateSpace:
 
     @property
     def max_steps(self):
-        return self.n_days - self.window_size
+        return max(self.n_days - self.window_size, 0)

@@ -34,7 +34,6 @@ DEFAULT_CONFIG = {
     "tickers": TICKERS,
     "features": FEATURES,
     "window_size": WINDOW_SIZE,
-    # Đường dẫn mặc định trên máy local; trên Kaggle sẽ override bằng config
     "data_path": DATA_PATH,
     "train_ratio": 0.7,
     "val_ratio": 0.15,

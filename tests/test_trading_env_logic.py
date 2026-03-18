@@ -1,0 +1,142 @@
+import unittest
+
+import numpy as np
+import pandas as pd
+
+from src.environment.trading_env import TradingEnv
+
+
+def make_price_frame(n_days: int, close_start: float = 10.0) -> pd.DataFrame:
+    dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+    close = np.linspace(close_start, close_start + n_days - 1, n_days, dtype=np.float32)
+    df = pd.DataFrame(
+        {
+            "time": dates,
+            "close": close,
+            "close_norm": np.linspace(-1.0, 1.0, n_days, dtype=np.float32),
+            "return_1d": np.zeros(n_days, dtype=np.float32),
+            "return_5d": np.zeros(n_days, dtype=np.float32),
+            "macd": np.zeros(n_days, dtype=np.float32),
+            "rsi": np.zeros(n_days, dtype=np.float32),
+            "adx": np.zeros(n_days, dtype=np.float32),
+            "volume_norm": np.zeros(n_days, dtype=np.float32),
+        }
+    )
+    return df
+
+
+def make_data_dict(n_days: int, tickers: tuple[str, ...]) -> dict[str, pd.DataFrame]:
+    return {
+        ticker: make_price_frame(n_days, close_start=10.0 + idx)
+        for idx, ticker in enumerate(tickers)
+    }
+
+
+class DummyReward:
+    def __init__(self):
+        self.calls = []
+
+    def reset(self):
+        self.calls.clear()
+
+    def calculate(self, v_old, v_new, trade_amounts=None):
+        stored = None if trade_amounts is None else np.array(trade_amounts, copy=True)
+        self.calls.append((v_old, v_new, stored))
+        return 1.0
+
+
+class TradingEnvLogicTests(unittest.TestCase):
+    def test_reward_receives_trade_amounts(self):
+        env = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            random_start=False,
+            reward_scaling=1.0,
+        )
+        dummy_reward = DummyReward()
+        env.reward_fn = dummy_reward
+
+        env.reset()
+        _, reward, terminated, truncated, _ = env.step(np.array([1.0, 0.0], dtype=np.float32))
+
+        self.assertFalse(terminated)
+        self.assertFalse(truncated)
+        self.assertEqual(reward, 1.0)
+        self.assertEqual(len(dummy_reward.calls), 1)
+        self.assertIsNotNone(dummy_reward.calls[0][2])
+        self.assertTrue(np.any(np.abs(dummy_reward.calls[0][2]) > 0))
+
+    def test_random_start_respects_episode_boundary_and_seed(self):
+        env = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            max_steps=3,
+            random_start=True,
+        )
+
+        max_valid_start = env.max_t - env.max_steps
+        starts = []
+        for seed in range(20):
+            env.reset(seed=seed)
+            starts.append(env.t)
+
+        self.assertTrue(all(env.state_space.window_size - 1 <= t <= max_valid_start for t in starts))
+
+        env.reset(seed=123)
+        first_start = env.t
+        env.reset(seed=123)
+        self.assertEqual(first_start, env.t)
+
+    def test_short_dataset_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "window_size \\+ 1 common trading days"):
+            TradingEnv(
+                tickers=["AAA"],
+                mode="continuous",
+                data_dict=make_data_dict(30, ("AAA",)),
+                window_size=30,
+                random_start=False,
+            )
+
+    def test_discrete_scalar_action_is_supported(self):
+        env = TradingEnv(
+            tickers=["AAA", "BBB"],
+            mode="discrete",
+            data_dict=make_data_dict(40, ("AAA", "BBB")),
+            window_size=30,
+            random_start=False,
+        )
+
+        self.assertEqual(env.action_space.n, env.k * env.n_stocks)
+
+        env.reset()
+        _, _, terminated, truncated, info = env.step(5)
+
+        self.assertFalse(terminated)
+        self.assertFalse(truncated)
+        self.assertEqual(info["trades"].shape, (2,))
+        self.assertEqual(info["trades"][0], 0)
+        self.assertGreater(info["trades"][1], 0)
+
+    def test_discrete_legacy_vector_action_is_still_supported(self):
+        env = TradingEnv(
+            tickers=["AAA", "BBB"],
+            mode="discrete",
+            data_dict=make_data_dict(40, ("AAA", "BBB")),
+            window_size=30,
+            random_start=False,
+        )
+
+        env.reset()
+        _, _, _, _, info = env.step(np.array([1, 2], dtype=np.int64))
+
+        self.assertEqual(info["trades"].shape, (2,))
+        self.assertEqual(info["trades"][0], 0)
+        self.assertGreater(info["trades"][1], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

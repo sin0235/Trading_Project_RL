@@ -34,7 +34,7 @@ val_ratio: 0.15
 test_ratio: 0.15
 
 initial_balance: 1000000000
-fee_rate: 0.0015
+fee_rate: 0.001
 max_steps_train: 200
 max_steps_eval: 9999
 reward_scaling: 0.0001
@@ -56,7 +56,7 @@ vf_coef: 0.5
 max_grad_norm: 0.5
 target_kl: 0.03
 
-total_timesteps: 500000
+total_timesteps: 50000
 lr_decay: true
 eval_freq: 10
 save_freq: 50

@@ -210,7 +210,7 @@ class PPOAgent:
         PPO clipped update trên buffer. Mini-batch shuffle, stateless hidden.
         Trả về dict training metrics.
         """
-        self.model.train()
+        self.model.improve()
         data = self.buffer.get_tensors(self.device)
 
         n = len(self.buffer)
