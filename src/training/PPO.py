@@ -14,6 +14,7 @@ Chạy:
 
 import os
 import sys
+import math
 import random
 import numpy as np
 import torch
@@ -102,6 +103,19 @@ def make_env(tickers, data_dict, config, for_eval=False):
     )
 
 
+def average_metrics(metrics_list: list[dict]) -> dict:
+    if not metrics_list:
+        return {}
+
+    avg_metrics = {}
+    keys = set().union(*(m.keys() for m in metrics_list))
+    for key in keys:
+        vals = [m[key] for m in metrics_list if key in m]
+        if vals:
+            avg_metrics[key] = float(np.mean(vals))
+    return avg_metrics
+
+
 def train_ppo(config: dict = None):
     cfg = {**DEFAULT_CONFIG, **(config or {})}
     set_seed(cfg["seed"])
@@ -176,15 +190,21 @@ def train_ppo(config: dict = None):
     # ----------------------------------------------------------------
     # 5. Training loop
     # ----------------------------------------------------------------
-    n_rollouts = cfg["total_timesteps"] // cfg["n_steps"]
+    n_rollouts = max(1, math.ceil(cfg["total_timesteps"] / cfg["n_steps"]))
     episode_counter = 0
     best_val_sharpe = -np.inf
     obs = None
 
     save_dir = logger.get_run_dir() / "checkpoints"
     save_dir.mkdir(parents=True, exist_ok=True)
+    train_reset_seed = cfg["seed"]
 
     for rollout in range(1, n_rollouts + 1):
+        remaining_steps = cfg["total_timesteps"] - agent.total_steps
+        if remaining_steps <= 0:
+            break
+        rollout_steps = min(cfg["n_steps"], remaining_steps)
+
         # LR linear decay
         if cfg["lr_decay"]:
             progress = agent.total_steps / cfg["total_timesteps"]
@@ -193,7 +213,14 @@ def train_ppo(config: dict = None):
             agent.set_lr(new_lr)
 
         # Collect
-        obs, ep_infos = agent.collect_rollout(train_env, state_space, cfg["n_steps"], obs)
+        obs, ep_infos = agent.collect_rollout(
+            train_env,
+            state_space,
+            rollout_steps,
+            obs,
+            reset_seed=train_reset_seed,
+        )
+        train_reset_seed = None
 
         # Update
         update_stats = agent.update()
@@ -236,17 +263,15 @@ def train_ppo(config: dict = None):
         # Periodic eval on val set
         if rollout % cfg["eval_freq"] == 0:
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
-            for i, pv in enumerate(val_values):
-                metrics = compute_all(pv, cfg["initial_balance"])
-                logger.log_eval(episode=episode_counter, metrics=metrics, split="val")
+            val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
+            avg_val_metrics = average_metrics(val_metrics_list)
+            logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val")
+            logger.info(f"\n{format_report(avg_val_metrics)}")
 
-                if i == 0:
-                    logger.info(f"\n{format_report(metrics)}")
-
-                    if metrics.get("sharpe_ratio", -999) > best_val_sharpe:
-                        best_val_sharpe = metrics["sharpe_ratio"]
-                        agent.save(str(save_dir / "best_model.pt"))
-                        logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
+            if avg_val_metrics.get("sharpe_ratio", -np.inf) > best_val_sharpe:
+                best_val_sharpe = avg_val_metrics["sharpe_ratio"]
+                agent.save(str(save_dir / "best_model.pt"))
+                logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
 
         # Periodic checkpoint
         if rollout % cfg["save_freq"] == 0:
@@ -262,11 +287,7 @@ def train_ppo(config: dict = None):
 
     test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
     test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]
-
-    avg_test = {}
-    for key in test_metrics_list[0]:
-        vals = [m[key] for m in test_metrics_list if key in m]
-        avg_test[key] = float(np.mean(vals))
+    avg_test = average_metrics(test_metrics_list)
 
     logger.log_eval(episode=episode_counter, metrics=avg_test, split="test")
     logger.info(f"\n=== FINAL TEST RESULTS (avg {len(test_values)} episodes) ===")

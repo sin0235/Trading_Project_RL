@@ -5,23 +5,38 @@ import os
 
 class DataProcessor:
     def __init__(self, dataset: List[pd.DataFrame]):
-        self.dataset = dataset
+        self.dataset = [data.copy() for data in dataset]
 
     def clean_data(self) -> List[pd.DataFrame]:
-        for data in self.dataset:
+        required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+        for i, data in enumerate(self.dataset):
+            missing_cols = [col for col in required_cols if col not in data.columns]
+            if missing_cols:
+                raise KeyError(f"Missing required columns: {missing_cols}")
+
+            data['time'] = pd.to_datetime(data['time'], errors='coerce')
             data.sort_values('time', inplace=True)
             data.reset_index(drop=True, inplace=True)
             data.drop_duplicates(subset='time', inplace=True)
-            data['time'] = pd.to_datetime(data['time'])
-            data[['open', 'high', 'low', 'close']] = data[['open', 'high', 'low', 'close']].astype(float)
-            data['volume'] = data['volume'].fillna(0).astype(float)
-            if data.isnull().any().any():
-                data.ffill(inplace=True)
-                data.bfill(inplace=True)
+            data[['open', 'high', 'low', 'close']] = data[['open', 'high', 'low', 'close']].apply(
+                pd.to_numeric, errors='coerce'
+            )
+            data['volume'] = pd.to_numeric(data['volume'], errors='coerce').fillna(0).astype(float)
+
+            # Chỉ forward-fill để tránh dùng dữ liệu tương lai cho quá khứ.
+            data[['open', 'high', 'low', 'close']] = data[['open', 'high', 'low', 'close']].ffill()
+            data.dropna(subset=['time', 'open', 'high', 'low', 'close'], inplace=True)
+            self.dataset[i] = data.reset_index(drop=True)
         return self.dataset
 
     def _zscore_rolling(self, series: pd.Series, window: int = 60) -> pd.Series:
-        return (series - series.rolling(window).mean()) / series.rolling(window).std()
+        rolling = series.rolling(window=window, min_periods=window)
+        mean = rolling.mean()
+        std = rolling.std()
+        zscore = (series - mean) / std
+        zero_std_mask = std.eq(0) & std.notna()
+        zscore = zscore.mask(zero_std_mask, 0.0)
+        return zscore.replace([np.inf, -np.inf], np.nan)
 
     def calculate_features(self) -> List[pd.DataFrame]:
         """Tinh 7 features, tat ca deu duoc chuan hoa ve ~mean=0, std=1 (Z-score rolling 60)"""
@@ -56,14 +71,23 @@ class DataProcessor:
         delta = series.diff()
         gain = delta.where(delta > 0, 0.0)
         loss = (-delta).where(delta < 0, 0.0)
-        avg_gain = gain.rolling(window).mean()
-        avg_loss = loss.rolling(window).mean()
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        avg_gain = gain.rolling(window=window, min_periods=window).mean()
+        avg_loss = loss.rolling(window=window, min_periods=window).mean()
+
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+
+        flat_mask = avg_gain.eq(0) & avg_loss.eq(0)
+        rsi = rsi.mask(flat_mask, 50.0)
+        rsi = rsi.mask(avg_loss.eq(0) & avg_gain.gt(0), 100.0)
+        rsi = rsi.mask(avg_gain.eq(0) & avg_loss.gt(0), 0.0)
+        return rsi
 
     def drop_na(self, start_date: str = '2015-01-01') -> List[pd.DataFrame]:
         """Xoa NaN va loc du lieu tu start_date tro di"""
         for i, data in enumerate(self.dataset):
+            numeric_cols = data.select_dtypes(include=[np.number]).columns
+            data[numeric_cols] = data[numeric_cols].replace([np.inf, -np.inf], np.nan)
             data = data.dropna()
             data = data[data['time'] >= start_date]
             self.dataset[i] = data.reset_index(drop=True)
@@ -93,11 +117,13 @@ class DataProcessor:
         smooth_minus_dm = minus_dm.ewm(alpha=1/window, adjust=False).mean()
 
         # +DI, -DI, DX
-        plus_di = 100 * smooth_plus_dm / atr
-        minus_di = 100 * smooth_minus_dm / atr
+        atr_nonzero = atr.replace(0, np.nan)
+        plus_di = 100 * smooth_plus_dm / atr_nonzero
+        minus_di = 100 * smooth_minus_dm / atr_nonzero
         di_sum = plus_di + minus_di
         di_sum = di_sum.replace(0, np.nan)  # tranh chia cho 0
         dx = 100 * (plus_di - minus_di).abs() / di_sum
+        dx = dx.mask((atr == 0) | di_sum.isna(), 0.0)
 
         # ADX = smoothed DX
         adx = dx.ewm(alpha=1/window, adjust=False).mean()

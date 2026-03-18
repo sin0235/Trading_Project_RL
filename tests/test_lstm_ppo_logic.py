@@ -7,6 +7,7 @@ import torch
 from src.agents.ppo_agent import PPOAgent
 from src.environment.trading_env import TradingEnv
 from src.models.lstm import DRQNNetwork, LSTMFeatureExtractor, PPOLSTMActorCritic
+from src.training.PPO import average_metrics
 
 
 def make_price_frame(n_days: int, close_start: float = 10.0) -> pd.DataFrame:
@@ -110,6 +111,112 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertTrue(np.isfinite(update_stats["policy_loss"]))
         self.assertTrue(np.isfinite(update_stats["value_loss"]))
         self.assertTrue(np.isfinite(update_stats["entropy"]))
+
+    def test_collect_rollout_preserves_episode_reward_across_calls(self):
+        torch.manual_seed(0)
+        tickers = ("AAA", "BBB")
+        env = TradingEnv(
+            tickers=list(tickers),
+            mode="continuous",
+            data_dict=make_data_dict(60, tickers),
+            window_size=30,
+            random_start=False,
+            max_steps=5,
+            reward_scaling=1.0,
+        )
+        env.reward_fn.calculate = lambda v_old, v_new, trade_amounts=None: 1.0
+
+        model = PPOLSTMActorCritic(n_stocks=2, n_features=7, seq_len=30)
+        agent = PPOAgent(
+            model=model,
+            lr=1e-3,
+            n_epochs=1,
+            batch_size=4,
+            target_kl=None,
+            device="cpu",
+        )
+
+        obs, ep_infos_first = agent.collect_rollout(env, env.state_space, n_steps=3)
+        _, ep_infos_second = agent.collect_rollout(env, env.state_space, n_steps=3, obs=obs)
+
+        self.assertEqual(ep_infos_first, [])
+        self.assertEqual(len(ep_infos_second), 1)
+        self.assertEqual(ep_infos_second[0]["steps"], 5)
+        self.assertEqual(ep_infos_second[0]["total_reward"], 5.0)
+
+    def test_collect_rollout_reset_seed_is_reproducible(self):
+        torch.manual_seed(0)
+        tickers = ("AAA", "BBB")
+        model = PPOLSTMActorCritic(n_stocks=2, n_features=7, seq_len=30)
+        agent = PPOAgent(
+            model=model,
+            lr=1e-3,
+            n_epochs=1,
+            batch_size=4,
+            target_kl=None,
+            device="cpu",
+        )
+
+        env1 = TradingEnv(
+            tickers=list(tickers),
+            mode="continuous",
+            data_dict=make_data_dict(60, tickers),
+            window_size=30,
+            random_start=True,
+            max_steps=5,
+        )
+        env2 = TradingEnv(
+            tickers=list(tickers),
+            mode="continuous",
+            data_dict=make_data_dict(60, tickers),
+            window_size=30,
+            random_start=True,
+            max_steps=5,
+        )
+
+        agent.collect_rollout(env1, env1.state_space, n_steps=1, reset_seed=123)
+        start_date_1 = env1.date_memory[0]
+        agent.collect_rollout(env2, env2.state_space, n_steps=1, reset_seed=123)
+        start_date_2 = env2.date_memory[0]
+
+        self.assertEqual(start_date_1, start_date_2)
+
+    def test_evaluate_avoids_duplicate_fixed_start_episodes(self):
+        torch.manual_seed(0)
+        tickers = ("AAA", "BBB")
+        env = TradingEnv(
+            tickers=list(tickers),
+            mode="continuous",
+            data_dict=make_data_dict(60, tickers),
+            window_size=30,
+            random_start=False,
+            max_steps=5,
+        )
+        model = PPOLSTMActorCritic(n_stocks=2, n_features=7, seq_len=30)
+        agent = PPOAgent(
+            model=model,
+            lr=1e-3,
+            n_epochs=1,
+            batch_size=4,
+            target_kl=None,
+            device="cpu",
+        )
+
+        values = agent.evaluate(env, env.state_space, n_episodes=3, deterministic=True)
+
+        self.assertEqual(len(values), 1)
+
+    def test_average_metrics_aggregates_all_keys(self):
+        metrics = average_metrics(
+            [
+                {"a": 1.0, "b": 3.0},
+                {"a": 3.0, "b": 5.0, "c": 7.0},
+            ]
+        )
+
+        self.assertEqual(metrics["a"], 2.0)
+        self.assertEqual(metrics["b"], 4.0)
+        self.assertEqual(metrics["c"], 7.0)
 
 
 if __name__ == "__main__":

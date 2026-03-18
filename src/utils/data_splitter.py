@@ -76,11 +76,19 @@ def split_by_ratio(
 
     # Lấy tập ngày chung
     common_dates = _get_common_dates(data_dict)
+    if len(common_dates) == 0:
+        raise ValueError("Không có ngày giao dịch chung giữa các ticker.")
     n = len(common_dates)
 
     n_train = int(n * train_ratio)
     n_val   = int(n * val_ratio)
     n_test  = n - n_train - n_val
+
+    if min(n_train, n_val, n_test) <= 0:
+        raise ValueError(
+            "Tập dữ liệu quá nhỏ cho tỷ lệ split hiện tại. "
+            f"n_days={n}, train={n_train}, val={n_val}, test={n_test}"
+        )
 
     train_dates = common_dates[:n_train]
     val_dates   = common_dates[n_train : n_train + n_val]
@@ -141,6 +149,8 @@ def split_by_date(
 
 
 def _get_common_dates(data_dict: Dict[str, pd.DataFrame]) -> pd.DatetimeIndex:
+    if not data_dict:
+        raise ValueError("data_dict không được rỗng.")
     tickers = list(data_dict.keys())
     common = pd.DatetimeIndex(data_dict[tickers[0]]["time"].values)
     for ticker in tickers[1:]:

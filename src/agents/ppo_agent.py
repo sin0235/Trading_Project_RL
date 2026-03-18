@@ -9,7 +9,7 @@ Mỗi observation từ env (mode=flatten) được chuyển qua flat_obs_to_sequ
 thành (market_state, portfolio_state) cho LSTM.
 
 Update dùng stateless hidden (zero-init) để hỗ trợ mini-batch song song.
-Rollout collection giữ hidden state xuyên suốt episode để exploration tốt hơn.
+Rollout collection cũng dùng stateless hidden để khớp hoàn toàn với PPO update.
 """
 
 import torch
@@ -116,6 +116,7 @@ class PPOAgent:
         self.batch_size = batch_size
 
         self.buffer = RolloutBuffer()
+        self._episode_reward = 0.0
 
         self.total_steps = 0
         self.n_updates = 0
@@ -124,7 +125,8 @@ class PPOAgent:
     # Rollout Collection
     # ------------------------------------------------------------------
 
-    def collect_rollout(self, env, state_space, n_steps: int, obs=None):
+    def collect_rollout(self, env, state_space, n_steps: int, obs=None,
+                        reset_seed: Optional[int] = None):
         """
         Thu thập n_steps transitions.
         PPO hiện dùng LSTM như một sequence encoder trên từng observation window,
@@ -138,9 +140,9 @@ class PPOAgent:
         self.model.eval()
 
         if obs is None:
-            obs, _ = env.reset()
+            obs, _ = env.reset(seed=reset_seed)
+            self._episode_reward = 0.0
 
-        episode_reward = 0.0
         episode_infos = []
 
         with torch.no_grad():
@@ -162,7 +164,7 @@ class PPOAgent:
                 new_obs, reward, terminated, truncated, info = env.step(action_np)
                 done = terminated or truncated
                 self.total_steps += 1
-                episode_reward += reward
+                self._episode_reward += reward
 
                 self.buffer.add(
                     market_state=market_state,
@@ -176,14 +178,14 @@ class PPOAgent:
 
                 if done:
                     episode_infos.append({
-                        "total_reward": episode_reward,
+                        "total_reward": self._episode_reward,
                         "portfolio_value": info.get("portfolio_value", 0),
                         "total_return": (info.get("portfolio_value", 0) - env.initial_balance) / env.initial_balance,
                         "n_trades": env.trades,
                         "total_cost": env.cost,
                         "steps": env.current_step,
                     })
-                    episode_reward = 0.0
+                    self._episode_reward = 0.0
                     obs, _ = env.reset()
                 else:
                     obs = new_obs
@@ -301,12 +303,17 @@ class PPOAgent:
                  deterministic: bool = True) -> List[List[float]]:
         """
         Chạy n_episodes đánh giá. Trả về list các chuỗi portfolio_values.
+        Nếu env có fixed start và chạy deterministic, nhiều episode sẽ cho cùng
+        một trajectory; khi đó chỉ chạy một lần để tránh metric lặp lại.
         """
         self.model.eval()
         all_values = []
+        effective_episodes = n_episodes
+        if deterministic and not getattr(env, "random_start", True):
+            effective_episodes = 1
 
         with torch.no_grad():
-            for _ in range(n_episodes):
+            for _ in range(effective_episodes):
                 obs, _ = env.reset()
                 done = False
                 pv = [env.portfolio_value]

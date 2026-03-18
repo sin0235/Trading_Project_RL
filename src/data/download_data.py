@@ -1,15 +1,14 @@
 import pandas as pd
-import numpy as np
-from vnstock import Vnstock, register_user
 from typing import List, Dict
 import time
 import os
 import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from constants import API_KEY_VNSTOCK
-
-register_user(api_key=API_KEY_VNSTOCK)
+try:
+    from src.constants import API_KEY_VNSTOCK
+except ImportError:
+    sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+    from src.constants import API_KEY_VNSTOCK
 
 
 class DownloadData:
@@ -23,6 +22,15 @@ class DownloadData:
         self.delay = delay
         self.data: Dict[str, pd.DataFrame] = {}
         self.dataset: List[pd.DataFrame] = []
+        self._registered = False
+
+    def _ensure_registration(self) -> None:
+        if self._registered:
+            return
+        if API_KEY_VNSTOCK:
+            from vnstock import register_user
+            register_user(api_key=API_KEY_VNSTOCK)
+        self._registered = True
 
     def download_all(self):
         self.data = {}
@@ -36,6 +44,8 @@ class DownloadData:
                 print(f"Loi khi tai {ticker}: {e}")
 
     def _get_single(self, ticker: str) -> pd.DataFrame:
+        self._ensure_registration()
+        from vnstock import Vnstock
         stock = Vnstock().stock(symbol=ticker, source=self.source)
         data = stock.quote.history(start=self.start_date, end=self.end_date, interval=self.interval)
         data['symbol'] = ticker
