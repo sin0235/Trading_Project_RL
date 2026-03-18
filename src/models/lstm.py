@@ -13,7 +13,8 @@ Input từ StateSpace (mode='sequential'):
 
 import torch
 import torch.nn as nn
-from torch.distributions import Normal
+import torch.nn.functional as F
+from torch.distributions import Dirichlet
 import numpy as np
 
 
@@ -42,12 +43,14 @@ def orthogonal_init(module, gain=1.0):
                 nn.init.xavier_uniform_(param)
             elif 'weight_hh' in name:
                 nn.init.orthogonal_(param)
-            elif 'bias' in name:
+            elif 'bias_ih' in name:
                 nn.init.zeros_(param)
                 # Bias cổng quên = 1.0 (Jozefowicz et al., 2015)
                 # Thứ tự bias LSTM: [input_gate, forget_gate, cell_gate, output_gate]
                 n = param.size(0)
                 param.data[n // 4 : n // 2].fill_(1.0)
+            elif 'bias_hh' in name:
+                nn.init.zeros_(param)
 
 
 def _init_sequential(sequential: nn.Sequential, output_gain: float = 1.0):
@@ -246,7 +249,7 @@ class DRQNNetwork(nn.Module):
         """
         if market_state.dim() == 4:
             batch, seq, stocks, feats = market_state.shape
-            market_state = market_state.view(batch, seq, stocks * feats)
+            market_state = market_state.reshape(batch, seq, stocks * feats)
 
         lstm_features, new_hidden = self.feature_extractor(
             market_state, hidden
@@ -306,10 +309,9 @@ class PPOLSTMActorCritic(nn.Module):
     """
     PPO Actor-Critic với LSTM cho Continuous Action Space.
 
-    Actor: mean không giới hạn. Action thực thi được squash qua tanh rồi scale
-    về [0, 1] cho vector tỷ trọng mục tiêu (N stocks + 1 cash).
-    get_action() trả về pre_squash_action để lưu buffer; evaluate_actions()
-    nhận pre_squash_action để log_prob nhất quán.
+    Actor: xuất tham số concentration cho phân phối Dirichlet trên simplex.
+    Action luôn có tổng bằng 1, phù hợp trực tiếp với vector tỷ trọng mục tiêu
+    (N stocks + 1 cash) mà environment thực thi.
 
     Architecture:
         market_state → LSTM → lstm_features (128)
@@ -318,13 +320,11 @@ class PPOLSTMActorCritic(nn.Module):
                               ↓                ↓
                          Actor Head       Critic Head
                               ↓                ↓
-                   mean (n_stocks + 1)   value (1)
-                     [không giới hạn]
+              concentration (n_stocks + 1)   value (1)
     """
 
-    # Giới hạn clamp cho log_std
-    LOG_STD_MIN = -20.0
-    LOG_STD_MAX = 2.0
+    CONCENTRATION_MIN = 1e-3
+    ACTION_EPS = 1e-6
 
     def __init__(self, n_stocks: int, n_features: int,
                  seq_len: int = 30, hidden_size: int = 128,
@@ -338,13 +338,15 @@ class PPOLSTMActorCritic(nn.Module):
             hidden_size: Kích thước hidden state LSTM
             num_layers: Số lớp LSTM
             dropout: Dropout rate
-            log_std_init: Giá trị khởi tạo cho log_std
+            log_std_init: Giữ lại để tương thích ngược với config cũ. Không còn dùng
+                          sau khi policy chuyển sang Dirichlet trên simplex.
         """
         super().__init__()
 
         self.n_stocks = n_stocks
         self.n_features = n_features
         self.hidden_size = hidden_size
+        self.log_std_init = log_std_init
 
         input_size = n_stocks * n_features
         portfolio_dim = 1 + n_stocks
@@ -357,7 +359,7 @@ class PPOLSTMActorCritic(nn.Module):
             dropout=dropout,
         )
 
-        # Actor: mean không giới hạn (không dùng Tanh)
+        # Actor: logits cho concentration của Dirichlet
         self.actor_head = nn.Sequential(
             nn.Linear(combined_dim, hidden_size),
             nn.ReLU(),
@@ -365,11 +367,6 @@ class PPOLSTMActorCritic(nn.Module):
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, n_stocks + 1),
-        )
-
-        # Độ lệch chuẩn log — tham số học được
-        self.log_std = nn.Parameter(
-            torch.ones(n_stocks + 1) * log_std_init
         )
 
         # Critic: đầu ra giá trị trạng thái V(s)
@@ -385,6 +382,20 @@ class PPOLSTMActorCritic(nn.Module):
         # Actor: gain nhỏ để actions gần 0 lúc đầu (khám phá tốt hơn)
         _init_sequential(self.actor_head, output_gain=0.01)
         _init_sequential(self.critic_head, output_gain=1.0)
+        self._set_initial_dirichlet_bias(target_concentration=1.0)
+
+    def _set_initial_dirichlet_bias(self, target_concentration: float) -> None:
+        """Khởi tạo bias cuối để concentration ban đầu xấp xỉ 1.0 (gần uniform)."""
+        if target_concentration <= self.CONCENTRATION_MIN:
+            raise ValueError("target_concentration must be > CONCENTRATION_MIN")
+        last_linear = [m for m in self.actor_head.modules() if isinstance(m, nn.Linear)][-1]
+        target = target_concentration - self.CONCENTRATION_MIN
+        bias_value = float(np.log(np.expm1(target)))
+        with torch.no_grad():
+            last_linear.bias.fill_(bias_value)
+
+    def _get_policy_dist(self, concentration: torch.Tensor) -> Dirichlet:
+        return Dirichlet(concentration)
 
     def forward(self, market_state: torch.Tensor,
                 portfolio_state: torch.Tensor,
@@ -397,30 +408,26 @@ class PPOLSTMActorCritic(nn.Module):
             hidden: (h_0, c_0) hoặc None
 
         Returns:
-            action_mean: (batch, n_stocks + 1) — không giới hạn
-            action_std: (batch, n_stocks + 1)
+            concentration: (batch, n_stocks + 1) — tham số Dirichlet > 0
             value: (batch, 1)
             new_hidden: (h_n, c_n)
         """
         if market_state.dim() == 4:
             batch, seq, stocks, feats = market_state.shape
-            market_state = market_state.view(batch, seq, stocks * feats)
+            market_state = market_state.reshape(batch, seq, stocks * feats)
 
         lstm_features, new_hidden = self.feature_extractor(
             market_state, hidden
         )
         combined = torch.cat([lstm_features, portfolio_state], dim=-1)
 
-        action_mean = self.actor_head(combined)
-        log_std_clamped = torch.clamp(
-            self.log_std, self.LOG_STD_MIN, self.LOG_STD_MAX
-        )
-        action_std = log_std_clamped.exp().expand_as(action_mean)
+        concentration_logits = self.actor_head(combined)
+        concentration = F.softplus(concentration_logits) + self.CONCENTRATION_MIN
 
         # Critic
         value = self.critic_head(combined)
 
-        return action_mean, action_std, value, new_hidden
+        return concentration, value, new_hidden
 
     def init_hidden(self, batch_size: int,
                     device: torch.device = None) -> tuple:
@@ -431,39 +438,34 @@ class PPOLSTMActorCritic(nn.Module):
                    hidden: tuple = None) -> tuple:
         """
         Lấy mẫu action từ policy (khi tương tác với environment).
-        Trả về pre_squash_action để lưu buffer; evaluate_actions() dùng
-        pre_squash_action để tính log_prob nhất quán (có correction).
+        Action được lấy trực tiếp từ Dirichlet nên luôn nằm trên simplex.
 
         Returns:
-            action: (batch, n_stocks + 1) — đã squash về [0, 1], gửi cho env
-            pre_squash_action: (batch, n_stocks + 1) — lưu vào buffer
-            log_prob: (batch,) — log_prob của action sau squash
+            action: (batch, n_stocks + 1) — vector tỷ trọng tổng bằng 1
+            action_for_buffer: (batch, n_stocks + 1) — lưu vào buffer để PPO update
+            log_prob: (batch,) — log_prob của action theo Dirichlet
             value: (batch, 1)
             new_hidden: (h_n, c_n)
         """
-        action_mean, action_std, value, new_hidden = self.forward(
+        concentration, value, new_hidden = self.forward(
             market_state, portfolio_state, hidden
         )
 
-        dist = Normal(action_mean, action_std)
-        pre_squash_action = dist.rsample()
+        dist = self._get_policy_dist(concentration)
+        action = dist.rsample()
+        action = torch.clamp(action, min=self.ACTION_EPS)
+        action = action / action.sum(dim=-1, keepdim=True)
+        log_prob = dist.log_prob(action)
 
-        squashed = torch.tanh(pre_squash_action)
-        action = (squashed + 1.0) / 2.0
-
-        log_prob_pre = dist.log_prob(pre_squash_action).sum(dim=-1)
-        log_det = torch.log(0.5 * (1.0 - squashed.pow(2)) + 1e-6).sum(dim=-1)
-        log_prob = log_prob_pre - log_det
-
-        return action, pre_squash_action, log_prob, value, new_hidden
+        return action, action.detach().clone(), log_prob, value, new_hidden
 
     def evaluate_actions(self, market_state: torch.Tensor,
                          portfolio_state: torch.Tensor,
-                         raw_actions: torch.Tensor,
+                         actions: torch.Tensor,
                          hidden: tuple = None) -> tuple:
         """
         Đánh giá lại actions đã thực hiện (dùng trong PPO update).
-        Nhận raw_actions (chưa clamp) để log_prob nhất quán với get_action().
+        Nhận action simplex đã thực hiện để log_prob nhất quán với get_action().
 
         Lưu ý hidden state: hidden=None sẽ dùng zero-init và mất context thời gian.
         Trong PPO training nên lưu hidden state đầu mỗi rollout segment và truyền vào.
@@ -471,7 +473,7 @@ class PPOLSTMActorCritic(nn.Module):
         Args:
             market_state: (batch, seq_len, input_size)
             portfolio_state: (batch, portfolio_dim)
-            raw_actions: (batch, n_stocks + 1) — pre_squash_action từ get_action()
+            actions: (batch, n_stocks + 1) — action simplex từ get_action()
             hidden: (h_0, c_0) — nên là stored hidden state
 
         Returns:
@@ -480,18 +482,14 @@ class PPOLSTMActorCritic(nn.Module):
             values: (batch, 1)
             new_hidden: (h_n, c_n)
         """
-        action_mean, action_std, values, new_hidden = self.forward(
+        concentration, values, new_hidden = self.forward(
             market_state, portfolio_state, hidden
         )
 
-        dist = Normal(action_mean, action_std)
-
-        squashed = torch.tanh(raw_actions)
-        log_probs_pre = dist.log_prob(raw_actions).sum(dim=-1)
-        log_det = torch.log(0.5 * (1.0 - squashed.pow(2)) + 1e-6).sum(dim=-1)
-        log_probs = log_probs_pre - log_det
-
-        # Entropy loss
-        entropy = dist.entropy().sum(dim=-1) - log_det
+        dist = self._get_policy_dist(concentration)
+        actions = torch.clamp(actions, min=self.ACTION_EPS)
+        actions = actions / actions.sum(dim=-1, keepdim=True)
+        log_probs = dist.log_prob(actions)
+        entropy = dist.entropy()
 
         return log_probs, entropy, values, new_hidden

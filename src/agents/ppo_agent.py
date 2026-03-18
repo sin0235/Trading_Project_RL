@@ -116,7 +116,6 @@ class PPOAgent:
         self.batch_size = batch_size
 
         self.buffer = RolloutBuffer()
-        self._hidden = None
 
         self.total_steps = 0
         self.n_updates = 0
@@ -127,8 +126,9 @@ class PPOAgent:
 
     def collect_rollout(self, env, state_space, n_steps: int, obs=None):
         """
-        Thu thập n_steps transitions. Giữ hidden state xuyên suốt episode,
-        reset khi gặp done.
+        Thu thập n_steps transitions.
+        PPO hiện dùng LSTM như một sequence encoder trên từng observation window,
+        nên rollout/update đều dùng hidden=None để objective nhất quán.
 
         Returns:
             obs: observation cuối cùng
@@ -139,7 +139,6 @@ class PPOAgent:
 
         if obs is None:
             obs, _ = env.reset()
-            self._hidden = None
 
         episode_reward = 0.0
         episode_infos = []
@@ -151,12 +150,12 @@ class PPOAgent:
                 ms_t = torch.tensor(market_state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 ps_t = torch.tensor(portfolio_state, dtype=torch.float32, device=self.device).unsqueeze(0)
 
-                action, pre_squash, log_prob, value, new_hidden = self.model.get_action(
-                    ms_t, ps_t, self._hidden
+                action, action_for_buffer, log_prob, value, _ = self.model.get_action(
+                    ms_t, ps_t, hidden=None
                 )
 
                 action_np = action.cpu().numpy().squeeze(0)
-                pre_squash_np = pre_squash.cpu().numpy().squeeze(0)
+                action_buffer_np = action_for_buffer.cpu().numpy().squeeze(0)
                 log_prob_val = log_prob.cpu().item()
                 value_val = value.cpu().item()
 
@@ -168,7 +167,7 @@ class PPOAgent:
                 self.buffer.add(
                     market_state=market_state,
                     portfolio_state=portfolio_state,
-                    action=pre_squash_np,
+                    action=action_buffer_np,
                     log_prob=log_prob_val,
                     reward=reward,
                     done=done,
@@ -186,16 +185,14 @@ class PPOAgent:
                     })
                     episode_reward = 0.0
                     obs, _ = env.reset()
-                    self._hidden = None
                 else:
                     obs = new_obs
-                    self._hidden = (new_hidden[0].detach(), new_hidden[1].detach())
 
             # Bootstrap: V(s_T) cho GAE
             market_state, portfolio_state = state_space.flat_obs_to_sequential(obs)
             ms_t = torch.tensor(market_state, dtype=torch.float32, device=self.device).unsqueeze(0)
             ps_t = torch.tensor(portfolio_state, dtype=torch.float32, device=self.device).unsqueeze(0)
-            _, _, _, last_value, _ = self.model.get_action(ms_t, ps_t, self._hidden)
+            _, last_value, _ = self.model.forward(ms_t, ps_t, hidden=None)
             last_value = last_value.cpu().item()
 
         self.buffer.compute_gae(last_value, self.gamma, self.gae_lambda)
@@ -210,7 +207,9 @@ class PPOAgent:
         PPO clipped update trên buffer. Mini-batch shuffle, stateless hidden.
         Trả về dict training metrics.
         """
-        self.model.improve()
+        # Giữ eval mode để disable dropout trong lúc tính PPO objective.
+        # Gradients vẫn được tính bình thường trong PyTorch.
+        self.model.eval()
         data = self.buffer.get_tensors(self.device)
 
         n = len(self.buffer)
@@ -309,7 +308,6 @@ class PPOAgent:
         with torch.no_grad():
             for _ in range(n_episodes):
                 obs, _ = env.reset()
-                hidden = None
                 done = False
                 pv = [env.portfolio_value]
 
@@ -319,15 +317,14 @@ class PPOAgent:
                     ps_t = torch.tensor(ps, dtype=torch.float32, device=self.device).unsqueeze(0)
 
                     if deterministic:
-                        action_mean, _, _, new_hidden = self.model.forward(ms_t, ps_t, hidden)
-                        action = (torch.tanh(action_mean) + 1.0) / 2.0
+                        concentration, _, _ = self.model.forward(ms_t, ps_t, hidden=None)
+                        action = concentration / concentration.sum(dim=-1, keepdim=True)
                     else:
-                        action, _, _, _, new_hidden = self.model.get_action(ms_t, ps_t, hidden)
+                        action, _, _, _, _ = self.model.get_action(ms_t, ps_t, hidden=None)
 
                     action_np = action.cpu().numpy().squeeze(0)
                     obs, reward, terminated, truncated, info = env.step(action_np)
                     done = terminated or truncated
-                    hidden = (new_hidden[0].detach(), new_hidden[1].detach())
                     pv.append(env.portfolio_value)
 
                 all_values.append(pv)
