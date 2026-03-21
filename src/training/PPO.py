@@ -245,6 +245,121 @@ def load_run_config(
     return resolve_ppo_config(config=run_cfg)
 
 
+def infer_run_config_from_checkpoint(
+    ckpt_path: str | os.PathLike | Path,
+    base_config: dict,
+    overrides: dict | None = None,
+) -> dict:
+    ckpt = torch.load(Path(ckpt_path), map_location="cpu", weights_only=False)
+    state_dict = ckpt.get("model_state_dict")
+    if not isinstance(state_dict, dict):
+        raise ValueError(f"Checkpoint không chứa model_state_dict hợp lệ: {ckpt_path}")
+
+    ih_key = "feature_extractor.lstm.weight_ih_l0"
+    hh_key = "feature_extractor.lstm.weight_hh_l0"
+    actor_out_key = "actor_head.5.bias"
+    if ih_key not in state_dict or hh_key not in state_dict or actor_out_key not in state_dict:
+        raise ValueError(f"Checkpoint không đúng định dạng PPO-LSTM mong đợi: {ckpt_path}")
+
+    hidden_size = int(state_dict[hh_key].shape[1])
+    num_layers = len([k for k in state_dict if k.startswith("feature_extractor.lstm.weight_hh_l")])
+    n_assets = int(state_dict[actor_out_key].shape[0])
+    n_stocks = n_assets - 1
+    input_size = int(state_dict[ih_key].shape[1])
+
+    if n_stocks <= 0:
+        raise ValueError(f"Checkpoint có n_stocks không hợp lệ: {ckpt_path}")
+    if input_size % n_stocks != 0:
+        raise ValueError(
+            f"Không suy luận được số features từ checkpoint {ckpt_path}: "
+            f"input_size={input_size}, n_stocks={n_stocks}"
+        )
+
+    inferred_n_features = input_size // n_stocks
+    tickers = list(base_config.get("tickers", []))
+    features = list(base_config.get("features", []))
+    if len(tickers) != n_stocks:
+        raise ValueError(
+            f"Checkpoint cần {n_stocks} tickers nhưng base_config có {len(tickers)}. "
+            "Không thể dựng env/model tương thích."
+        )
+    if len(features) != inferred_n_features:
+        raise ValueError(
+            f"Checkpoint cần {inferred_n_features} features nhưng base_config có {len(features)}. "
+            "Không thể dựng env/model tương thích."
+        )
+
+    inferred_cfg = {
+        **base_config,
+        "hidden_size": hidden_size,
+        "num_layers": num_layers,
+    }
+    if overrides:
+        inferred_cfg.update(overrides)
+
+    return resolve_ppo_config(config=inferred_cfg)
+
+
+def resolve_eval_run(
+    results_root: str | os.PathLike | Path,
+    base_config: dict | None = None,
+    overrides: dict | None = None,
+) -> dict:
+    results_root = Path(results_root)
+    if not results_root.exists():
+        return {
+            "run_dir": None,
+            "ckpt_path": None,
+            "ckpt_source": "missing_results_root",
+            "config": None,
+            "config_source": "none",
+            "skipped_runs": [],
+        }
+
+    skipped_runs = []
+    runs = sorted([p for p in results_root.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
+    for run_dir in runs:
+        ckpt_path, ckpt_source = resolve_eval_checkpoint(run_dir / "checkpoints")
+        if ckpt_path is None:
+            skipped_runs.append({"run_id": run_dir.name, "reason": ckpt_source})
+            continue
+
+        try:
+            cfg = load_run_config(run_dir, overrides=overrides)
+            config_source = "run_config"
+        except FileNotFoundError:
+            if base_config is None:
+                skipped_runs.append({"run_id": run_dir.name, "reason": "missing_config"})
+                continue
+            try:
+                cfg = infer_run_config_from_checkpoint(ckpt_path, base_config=base_config, overrides=overrides)
+                config_source = "checkpoint_inferred"
+            except Exception as exc:
+                skipped_runs.append({"run_id": run_dir.name, "reason": f"infer_failed: {exc}"})
+                continue
+        except Exception as exc:
+            skipped_runs.append({"run_id": run_dir.name, "reason": f"config_failed: {exc}"})
+            continue
+
+        return {
+            "run_dir": run_dir,
+            "ckpt_path": ckpt_path,
+            "ckpt_source": ckpt_source,
+            "config": cfg,
+            "config_source": config_source,
+            "skipped_runs": skipped_runs,
+        }
+
+    return {
+        "run_dir": None,
+        "ckpt_path": None,
+        "ckpt_source": "no_compatible_run",
+        "config": None,
+        "config_source": "none",
+        "skipped_runs": skipped_runs,
+    }
+
+
 def make_env(tickers, data_dict, config, for_eval=False):
     return TradingEnv(
         tickers=tickers,

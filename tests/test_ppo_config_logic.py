@@ -1,12 +1,16 @@
+import torch
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
 
+from src.models.lstm import PPOLSTMActorCritic
 from src.training.PPO import (
     DEFAULT_CONFIG,
     compute_learning_rate,
+    infer_run_config_from_checkpoint,
     load_ppo_config,
+    resolve_eval_run,
     resolve_eval_checkpoint,
     load_run_config,
     resolve_ppo_config,
@@ -139,6 +143,52 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(cfg["num_layers"], 1)
             self.assertEqual(cfg["device"], "auto")
             self.assertEqual(cfg["reward_name"], DEFAULT_CONFIG["reward_name"])
+
+    def test_infer_run_config_from_checkpoint_recovers_model_shape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = Path(tmpdir) / "best_model.pt"
+            model = PPOLSTMActorCritic(
+                n_stocks=len(DEFAULT_CONFIG["tickers"]),
+                n_features=len(DEFAULT_CONFIG["features"]),
+                seq_len=DEFAULT_CONFIG["window_size"],
+                hidden_size=32,
+                num_layers=1,
+                dropout=0.0,
+            )
+            torch.save({"model_state_dict": model.state_dict()}, ckpt_path)
+
+            cfg = infer_run_config_from_checkpoint(ckpt_path, base_config=DEFAULT_CONFIG, overrides={"device": "auto"})
+
+            self.assertEqual(cfg["hidden_size"], 32)
+            self.assertEqual(cfg["num_layers"], 1)
+            self.assertEqual(cfg["device"], "auto")
+
+    def test_resolve_eval_run_can_fallback_to_checkpoint_inference_when_config_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            results_root = Path(tmpdir)
+            run_dir = results_root / "ppo_test_run"
+            ckpt_dir = run_dir / "checkpoints"
+            ckpt_dir.mkdir(parents=True)
+
+            model = PPOLSTMActorCritic(
+                n_stocks=len(DEFAULT_CONFIG["tickers"]),
+                n_features=len(DEFAULT_CONFIG["features"]),
+                seq_len=DEFAULT_CONFIG["window_size"],
+                hidden_size=32,
+                num_layers=1,
+                dropout=0.0,
+            )
+            torch.save({"model_state_dict": model.state_dict()}, ckpt_dir / "best_model.pt")
+
+            resolved = resolve_eval_run(
+                results_root,
+                base_config=DEFAULT_CONFIG,
+                overrides={"device": "auto"},
+            )
+
+            self.assertEqual(resolved["run_dir"], run_dir)
+            self.assertEqual(resolved["config_source"], "checkpoint_inferred")
+            self.assertEqual(resolved["config"]["hidden_size"], 32)
 
 
 if __name__ == "__main__":
