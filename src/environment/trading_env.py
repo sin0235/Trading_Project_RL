@@ -50,6 +50,8 @@ class TradingEnv(gym.Env):
         reward_scaling: float = 1.0,
         reward_name: str = "tmp",
         reward_kwargs: Optional[dict] = None,
+        trade_deadband: float = 0.0,
+        max_weight_change_per_step: float = 1.0,
         make_plots: bool = False,
         print_verbosity: int = 10,
         initial: bool = True,
@@ -67,12 +69,19 @@ class TradingEnv(gym.Env):
         self.reward_scaling = reward_scaling
         self.reward_name = reward_name
         self.reward_kwargs = dict(reward_kwargs or {})
+        self.trade_deadband = float(trade_deadband)
+        self.max_weight_change_per_step = float(max_weight_change_per_step)
         self.make_plots = make_plots
         self.print_verbosity = print_verbosity
         self.initial = initial
         self.previous_state = previous_state or []
         self.model_name = model_name
         self.iteration = iteration
+
+        if self.trade_deadband < 0:
+            raise ValueError("trade_deadband phải >= 0.")
+        if not (0 < self.max_weight_change_per_step <= 1.0):
+            raise ValueError("max_weight_change_per_step phải trong khoảng (0, 1].")
 
         # Alias for FinRL compatibility
         self.initial_amount = self.initial_balance
@@ -235,7 +244,13 @@ class TradingEnv(gym.Env):
 
             ratio = self.state_space.get_portfolio_state(self.cash, self.holdings, execution_prices)
             trade_amounts = decode_continuous_action(
-                action, ratio, self.cash, self.holdings, execution_prices
+                action,
+                ratio,
+                self.cash,
+                self.holdings,
+                execution_prices,
+                trade_deadband=self.trade_deadband,
+                max_weight_change_per_step=self.max_weight_change_per_step,
             )
 
         trade_amounts = apply_constraints(

@@ -44,38 +44,40 @@ DEFAULT_CONFIG = {
 
     # --- Environment ---
     "initial_balance": 1_000_000_000,
-    "fee_rate": 0.0015,
-    "max_steps_train": 200,
+    "fee_rate": 0.001,
+    "max_steps_train": 256,
     "max_steps_eval": 9999,
     "reward_scaling": 1.0,
     "reward_name": "tmp",
     "reward_window": 20,
+    "trade_deadband": 0.025,
+    "max_weight_change_per_step": 0.10,
 
     # --- Model (LSTM) ---
     "hidden_size": 128,
-    "num_layers": 2,
+    "num_layers": 1,
     "dropout": 0.0,
     "log_std_init": -0.5,
 
     # --- PPO ---
-    "learning_rate": 3e-4,
-    "n_steps": 2048,
+    "learning_rate": 1.5e-4,
+    "n_steps": 1024,
     "batch_size": 256,
-    "n_epochs": 10,
+    "n_epochs": 6,
     "gamma": 0.99,
-    "gae_lambda": 0.95,
-    "clip_range": 0.2,
-    "ent_coef": 0.01,
+    "gae_lambda": 0.97,
+    "clip_range": 0.15,
+    "ent_coef": 3e-4,
     "vf_coef": 0.5,
     "max_grad_norm": 0.5,
-    "target_kl": 0.03,
+    "target_kl": 0.02,
 
     # --- Schedule ---
-    "total_timesteps": 50_000,
+    "total_timesteps": 200_000,
     "lr_decay": True,
     "lr_schedule": "linear",
-    "min_learning_rate": 1e-5,
-    "eval_freq": 10,
+    "min_learning_rate": 3e-5,
+    "eval_freq": 5,
     "save_freq": 5,
     "n_eval_episodes": 1,
 
@@ -163,6 +165,10 @@ def resolve_ppo_config(config: dict | None = None,
         raise ValueError("min_learning_rate phải > 0.")
     if resolved["min_learning_rate"] > resolved["learning_rate"]:
         raise ValueError("min_learning_rate không được lớn hơn learning_rate.")
+    if resolved["trade_deadband"] < 0:
+        raise ValueError("trade_deadband phải >= 0.")
+    if not (0 < resolved["max_weight_change_per_step"] <= 1.0):
+        raise ValueError("max_weight_change_per_step phải trong khoảng (0, 1].")
     if resolved["total_timesteps"] <= 0:
         raise ValueError("total_timesteps phải > 0.")
 
@@ -374,6 +380,8 @@ def make_env(tickers, data_dict, config, for_eval=False):
         reward_scaling=config["reward_scaling"],
         reward_name=config["reward_name"],
         reward_kwargs={"window": config["reward_window"]},
+        trade_deadband=config["trade_deadband"],
+        max_weight_change_per_step=config["max_weight_change_per_step"],
         print_verbosity=999999,
     )
 
@@ -536,6 +544,10 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     logger.info(
         f"Reward function: {cfg['reward_name']} | "
         f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']}"
+    )
+    logger.info(
+        f"Execution filters: trade_deadband={cfg['trade_deadband']:.3f} | "
+        f"max_weight_change_per_step={cfg['max_weight_change_per_step']:.3f}"
     )
     logger.info(
         f"LR schedule: {cfg['lr_schedule']} | "

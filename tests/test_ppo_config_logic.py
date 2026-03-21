@@ -30,6 +30,8 @@ class PPOConfigLogicTests(unittest.TestCase):
                     reward_name: tmp
                     lr_schedule: linear
                     min_learning_rate: 0.00002
+                    trade_deadband: 0.03
+                    max_weight_change_per_step: 0.15
                     """
                 ).strip(),
                 encoding="utf-8",
@@ -43,6 +45,8 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(cfg["reward_name"], "tmp")
             self.assertEqual(cfg["lr_schedule"], "linear")
             self.assertEqual(cfg["min_learning_rate"], 0.00002)
+            self.assertEqual(cfg["trade_deadband"], 0.03)
+            self.assertEqual(cfg["max_weight_change_per_step"], 0.15)
 
     def test_resolve_ppo_config_merge_priority(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -91,6 +95,12 @@ class PPOConfigLogicTests(unittest.TestCase):
     def test_compute_learning_rate_cosine_and_constant(self):
         self.assertAlmostEqual(compute_learning_rate(1e-4, 2e-5, 0.25, "cosine"), 8.82842712474619e-05)
         self.assertAlmostEqual(compute_learning_rate(1e-4, 2e-5, 0.75, "constant"), 1e-4)
+
+    def test_resolve_ppo_config_validates_execution_filters(self):
+        with self.assertRaisesRegex(ValueError, "trade_deadband"):
+            resolve_ppo_config(config={"trade_deadband": -0.01})
+        with self.assertRaisesRegex(ValueError, "max_weight_change_per_step"):
+            resolve_ppo_config(config={"max_weight_change_per_step": 0.0})
 
     def test_resolve_eval_checkpoint_prefers_best_then_final_then_latest_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:

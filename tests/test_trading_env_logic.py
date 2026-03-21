@@ -11,9 +11,13 @@ def make_price_frame(
     n_days: int,
     close_start: float = 10.0,
     open_values: np.ndarray | None = None,
+    close_values: np.ndarray | None = None,
 ) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
-    close = np.linspace(close_start, close_start + n_days - 1, n_days, dtype=np.float32)
+    if close_values is None:
+        close = np.linspace(close_start, close_start + n_days - 1, n_days, dtype=np.float32)
+    else:
+        close = np.asarray(close_values, dtype=np.float32)
     if open_values is None:
         open_values = close.copy()
     df = pd.DataFrame(
@@ -100,6 +104,62 @@ class TradingEnvLogicTests(unittest.TestCase):
         self.assertEqual(info["execution_prices"][0], 20.0)
         self.assertEqual(env.holdings[0], 5)
         self.assertEqual(reward, -35.0)
+
+    def test_continuous_action_deadband_skips_small_rebalance(self):
+        n_days = 5
+        env = TradingEnv(
+            tickers=["AAA", "BBB"],
+            mode="continuous",
+            data_dict={
+                "AAA": make_price_frame(
+                    n_days,
+                    close_values=np.array([10.0, 10.0, 10.0, 10.0, 10.1], dtype=np.float32),
+                    open_values=np.array([10.0, 10.0, 10.0, 10.0, 10.1], dtype=np.float32),
+                ),
+                "BBB": make_price_frame(
+                    n_days,
+                    close_values=np.array([10.0, 10.0, 10.0, 10.0, 9.9], dtype=np.float32),
+                    open_values=np.array([10.0, 10.0, 10.0, 10.0, 9.9], dtype=np.float32),
+                ),
+            },
+            window_size=3,
+            random_start=False,
+            min_shares=1,
+            initial_balance=100.0,
+            fee_rate=0.0,
+            reward_scaling=1.0,
+            trade_deadband=0.01,
+        )
+
+        env.reward_fn.calculate = lambda v_old, v_new, trade_amounts=None: 0.0
+        env.reset()
+        env.step(np.array([0.5, 0.5, 0.0], dtype=np.float32))
+        _, _, terminated, truncated, info = env.step(np.array([0.5, 0.5, 0.0], dtype=np.float32))
+
+        self.assertTrue(terminated)
+        self.assertFalse(truncated)
+        np.testing.assert_array_equal(info["trades"], np.array([0, 0], dtype=np.int32))
+
+    def test_continuous_action_max_weight_change_caps_trade_size(self):
+        env = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict={"AAA": make_price_frame(5, close_start=10.0, open_values=np.full(5, 10.0, dtype=np.float32))},
+            window_size=3,
+            random_start=False,
+            min_shares=1,
+            initial_balance=100.0,
+            fee_rate=0.0,
+            reward_scaling=1.0,
+            max_weight_change_per_step=0.2,
+        )
+
+        env.reward_fn.calculate = lambda v_old, v_new, trade_amounts=None: 0.0
+        env.reset()
+        _, _, _, _, info = env.step(np.array([1.0, 0.0], dtype=np.float32))
+
+        self.assertEqual(info["trades"][0], 2)
+        self.assertEqual(env.holdings[0], 2)
 
     def test_random_start_respects_episode_boundary_and_seed(self):
         env = TradingEnv(

@@ -115,21 +115,40 @@ def decode_discrete_action(action, n_stocks, min_shares, cash, holdings, prices,
 
     return trade_amounts
 
-def decode_continuous_action(action: np.ndarray, ratio: np.ndarray, 
-                             cash, holdings, prices) -> np.ndarray:
+def decode_continuous_action(
+    action: np.ndarray,
+    ratio: np.ndarray,
+    cash,
+    holdings,
+    prices,
+    trade_deadband: float = 0.0,
+    max_weight_change_per_step: float = 1.0,
+) -> np.ndarray:
     """
     action: vector tỷ trọng mục tiêu [0, 1] cho N stocks + 1 cash
     ratio: vector tỷ trọng hiện tại
     """
     NAV = cash + np.sum(holdings * prices)
+    if NAV <= 0:
+        return np.zeros_like(holdings, dtype=np.int32)
+
     # Tỷ trọng mục tiêu của các mã (bỏ phần tử cuối là cash)
-    target_ratios = action[:-1] 
-    current_ratios = ratio[:-1]
-    
+    target_ratios = np.asarray(action[:-1], dtype=np.float64)
+    current_ratios = np.asarray(ratio[:-1], dtype=np.float64)
+
     diff_ratio = target_ratios - current_ratios
-    
-    # Lượng tiền cần dịch chuyển cho mỗi mã
-    # Dương là mua thêm, âm là bán bớt
+    if trade_deadband > 0:
+        diff_ratio[np.abs(diff_ratio) < trade_deadband] = 0.0
+
+    if max_weight_change_per_step < 1.0:
+        diff_ratio = np.clip(
+            diff_ratio,
+            -max_weight_change_per_step,
+            max_weight_change_per_step,
+        )
+
+    # Lượng tiền cần dịch chuyển cho mỗi mã.
+    # Dương là mua thêm, âm là bán bớt.
     trade_amounts = (diff_ratio * NAV) / prices
     return trade_amounts.astype(np.int32)
 
