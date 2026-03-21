@@ -34,14 +34,15 @@ val_ratio: 0.15
 test_ratio: 0.15
 
 initial_balance: 1000000000
-fee_rate: 0.001
+fee_rate: 0.0015
 max_steps_train: 200
 max_steps_eval: 9999
 reward_scaling: 0.0001
 
 hidden_size: 128
 num_layers: 2
-dropout: 0.1
+dropout: 0.0
+# Legacy key: giu lai de tuong thich nguoc, model hien tai khong con dung.
 log_std_init: -0.5
 
 learning_rate: 0.0003
@@ -59,8 +60,8 @@ target_kl: 0.03
 total_timesteps: 50000
 lr_decay: true
 eval_freq: 10
-save_freq: 50
-n_eval_episodes: 3
+save_freq: 5
+n_eval_episodes: 1
 
 seed: 42
 device: auto

@@ -18,6 +18,7 @@ import math
 import random
 import numpy as np
 import torch
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -50,7 +51,7 @@ DEFAULT_CONFIG = {
     # --- Model (LSTM) ---
     "hidden_size": 128,
     "num_layers": 2,
-    "dropout": 0.1,
+    "dropout": 0.0,
     "log_std_init": -0.5,
 
     # --- PPO ---
@@ -67,16 +68,19 @@ DEFAULT_CONFIG = {
     "target_kl": 0.03,
 
     # --- Schedule ---
-    "total_timesteps": 500_000,
+    "total_timesteps": 50_000,
     "lr_decay": True,
     "eval_freq": 10,
-    "save_freq": 50,
-    "n_eval_episodes": 3,
+    "save_freq": 5,
+    "n_eval_episodes": 1,
 
     # --- Misc ---
     "seed": 42,
     "device": "auto",
 }
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "Conf" / "ppo_conf.yaml"
 
 
 def set_seed(seed: int):
@@ -85,6 +89,53 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def _resolve_config_path(config_path: str | os.PathLike | None) -> Path:
+    if config_path is None:
+        return DEFAULT_CONFIG_PATH
+
+    path = Path(config_path)
+    if path.is_absolute():
+        return path
+
+    cwd_path = path.resolve()
+    if cwd_path.exists():
+        return cwd_path
+
+    project_path = (PROJECT_ROOT / path).resolve()
+    return project_path
+
+
+def load_ppo_config(config_path: str | os.PathLike | None = None) -> dict:
+    path = _resolve_config_path(config_path)
+    if not path.exists():
+        if config_path is None:
+            return {}
+        raise FileNotFoundError(f"Không tìm thấy file config: {path}")
+
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError("Cần cài PyYAML để đọc file config PPO.") from exc
+
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Config PPO phải là mapping/dict, nhận được: {type(cfg).__name__}")
+
+    unknown_keys = sorted(set(cfg) - set(DEFAULT_CONFIG))
+    if unknown_keys:
+        raise KeyError(f"Config PPO chứa key không hợp lệ: {unknown_keys}")
+
+    return cfg
+
+
+def resolve_ppo_config(config: dict | None = None,
+                       config_path: str | os.PathLike | None = None) -> dict:
+    yaml_cfg = load_ppo_config(config_path)
+    return {**DEFAULT_CONFIG, **yaml_cfg, **(config or {})}
 
 
 def make_env(tickers, data_dict, config, for_eval=False):
@@ -116,8 +167,8 @@ def average_metrics(metrics_list: list[dict]) -> dict:
     return avg_metrics
 
 
-def train_ppo(config: dict = None):
-    cfg = {**DEFAULT_CONFIG, **(config or {})}
+def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None):
+    cfg = resolve_ppo_config(config=config, config_path=config_path)
     set_seed(cfg["seed"])
 
     # ----------------------------------------------------------------
@@ -310,4 +361,15 @@ def train_ppo(config: dict = None):
 
 
 if __name__ == "__main__":
-    train_ppo()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train PPO-LSTM trading agent.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path tới file YAML config. Mặc định dùng Conf/ppo_conf.yaml nếu tồn tại.",
+    )
+    args = parser.parse_args()
+
+    train_ppo(config_path=args.config)
