@@ -206,25 +206,45 @@ def _checkpoint_step(path: Path) -> int:
         return -1
 
 
-def resolve_eval_checkpoint(ckpt_dir: str | os.PathLike | Path) -> tuple[Path | None, str]:
-    ckpt_dir = Path(ckpt_dir)
-    if not ckpt_dir.exists():
+def _candidate_checkpoint_dirs(path: str | os.PathLike | Path) -> list[Path]:
+    path = Path(path)
+    if path.name == "checkpoints":
+        return [path]
+
+    candidates = [path / "checkpoints", path]
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
+def resolve_eval_checkpoint(path: str | os.PathLike | Path) -> tuple[Path | None, str]:
+    checkpoint_dirs = _candidate_checkpoint_dirs(path)
+    if all(not ckpt_dir.exists() for ckpt_dir in checkpoint_dirs):
         return None, "missing_dir"
 
-    best_path = ckpt_dir / "best_model.pt"
-    if best_path.exists():
-        return best_path, "best_model"
+    for ckpt_dir in checkpoint_dirs:
+        if not ckpt_dir.exists():
+            continue
 
-    final_path = ckpt_dir / "final_model.pt"
-    if final_path.exists():
-        return final_path, "final_model"
+        best_path = ckpt_dir / "best_model.pt"
+        if best_path.exists():
+            return best_path, "best_model"
 
-    checkpoint_paths = sorted(
-        ckpt_dir.glob("checkpoint_*.pt"),
-        key=lambda path: (_checkpoint_step(path), path.stat().st_mtime),
-    )
-    if checkpoint_paths:
-        return checkpoint_paths[-1], "latest_checkpoint"
+        final_path = ckpt_dir / "final_model.pt"
+        if final_path.exists():
+            return final_path, "final_model"
+
+        checkpoint_paths = sorted(
+            ckpt_dir.glob("checkpoint_*.pt"),
+            key=lambda candidate: (_checkpoint_step(candidate), candidate.stat().st_mtime),
+        )
+        if checkpoint_paths:
+            return checkpoint_paths[-1], "latest_checkpoint"
 
     return None, "no_checkpoint"
 
@@ -325,7 +345,7 @@ def resolve_eval_run(
     skipped_runs = []
     runs = sorted([p for p in results_root.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime, reverse=True)
     for run_dir in runs:
-        ckpt_path, ckpt_source = resolve_eval_checkpoint(run_dir / "checkpoints")
+        ckpt_path, ckpt_source = resolve_eval_checkpoint(run_dir)
         if ckpt_path is None:
             skipped_runs.append({"run_id": run_dir.name, "reason": ckpt_source})
             continue
@@ -363,6 +383,83 @@ def resolve_eval_run(
         "config": None,
         "config_source": "none",
         "skipped_runs": skipped_runs,
+    }
+
+
+def get_results_root_candidates(
+    project_root: str | os.PathLike | Path | None = None,
+    cwd: str | os.PathLike | Path | None = None,
+) -> list[Path]:
+    project_root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    cwd = Path(cwd) if cwd is not None else Path.cwd()
+
+    candidates = [
+        project_root / "results" / "runs",
+        cwd / "results" / "runs",
+        cwd.parent / "results" / "runs",
+        project_root.parent / "results" / "runs",
+        Path("/kaggle/working/repo/results/runs"),
+        Path("/kaggle/working/results/runs"),
+        Path("/kaggle/results/runs"),
+    ]
+
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+
+    return deduped
+
+
+def resolve_eval_run_across_roots(
+    results_roots: list[str | os.PathLike | Path],
+    base_config: dict | None = None,
+    overrides: dict | None = None,
+) -> dict:
+    checked_results_roots = []
+    missing_results_roots = []
+    all_skipped_runs = []
+    candidates = []
+
+    for results_root in results_roots:
+        root = Path(results_root)
+        checked_results_roots.append(root)
+        resolved = resolve_eval_run(root, base_config=base_config, overrides=overrides)
+
+        for item in resolved["skipped_runs"]:
+            all_skipped_runs.append({"results_root": str(root), **item})
+
+        if resolved["run_dir"] is None:
+            if resolved["ckpt_source"] == "missing_results_root":
+                missing_results_roots.append(root)
+            continue
+
+        candidates.append({
+            **resolved,
+            "results_root": root,
+        })
+
+    if candidates:
+        best = max(candidates, key=lambda item: item["run_dir"].stat().st_mtime)
+        best["checked_results_roots"] = checked_results_roots
+        best["missing_results_roots"] = missing_results_roots
+        best["all_skipped_runs"] = all_skipped_runs
+        return best
+
+    return {
+        "run_dir": None,
+        "ckpt_path": None,
+        "ckpt_source": "no_compatible_run",
+        "config": None,
+        "config_source": "none",
+        "results_root": None,
+        "checked_results_roots": checked_results_roots,
+        "missing_results_roots": missing_results_roots,
+        "skipped_runs": [],
+        "all_skipped_runs": all_skipped_runs,
     }
 
 
@@ -538,6 +635,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         run_id=run_id,
         agent="PPO_LSTM",
         config=cfg,
+        results_dir=str(PROJECT_ROOT / "results" / "runs"),
     )
     logger.info(f"Data split: {split.summary()}")
     logger.info(f"Device: {agent.device} | Params: {total_params:,}")

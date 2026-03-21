@@ -8,8 +8,10 @@ from src.models.lstm import PPOLSTMActorCritic
 from src.training.PPO import (
     DEFAULT_CONFIG,
     compute_learning_rate,
+    get_results_root_candidates,
     infer_run_config_from_checkpoint,
     load_ppo_config,
+    resolve_eval_run_across_roots,
     resolve_eval_run,
     resolve_eval_checkpoint,
     load_run_config,
@@ -122,6 +124,16 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(path.name, "best_model.pt")
             self.assertEqual(source, "best_model")
 
+    def test_resolve_eval_checkpoint_can_read_legacy_checkpoint_directly_in_run_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            (run_dir / "final_model.pt").write_bytes(b"x")
+
+            path, source = resolve_eval_checkpoint(run_dir)
+
+            self.assertEqual(path.name, "final_model.pt")
+            self.assertEqual(source, "final_model")
+
     def test_load_run_config_uses_run_specific_model_shape_and_fills_new_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir)
@@ -199,6 +211,49 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(resolved["run_dir"], run_dir)
             self.assertEqual(resolved["config_source"], "checkpoint_inferred")
             self.assertEqual(resolved["config"]["hidden_size"], 32)
+
+    def test_get_results_root_candidates_includes_repo_and_cwd_roots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "repo"
+            cwd = Path(tmpdir) / "working"
+            candidates = get_results_root_candidates(project_root=project_root, cwd=cwd)
+
+            self.assertIn(project_root / "results" / "runs", candidates)
+            self.assertIn(cwd / "results" / "runs", candidates)
+
+    def test_resolve_eval_run_across_roots_can_find_legacy_cwd_results(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "repo"
+            legacy_root = Path(tmpdir) / "working" / "results" / "runs"
+            project_root.mkdir(parents=True)
+            legacy_root.mkdir(parents=True)
+
+            run_dir = legacy_root / "ppo_test_run"
+            ckpt_dir = run_dir / "checkpoints"
+            ckpt_dir.mkdir(parents=True)
+
+            model = PPOLSTMActorCritic(
+                n_stocks=len(DEFAULT_CONFIG["tickers"]),
+                n_features=len(DEFAULT_CONFIG["features"]),
+                seq_len=DEFAULT_CONFIG["window_size"],
+                hidden_size=32,
+                num_layers=1,
+                dropout=0.0,
+            )
+            torch.save({"model_state_dict": model.state_dict()}, ckpt_dir / "best_model.pt")
+
+            resolved = resolve_eval_run_across_roots(
+                [
+                    project_root / "results" / "runs",
+                    legacy_root,
+                ],
+                base_config=DEFAULT_CONFIG,
+                overrides={"device": "auto"},
+            )
+
+            self.assertEqual(resolved["run_dir"], run_dir)
+            self.assertEqual(resolved["results_root"], legacy_root)
+            self.assertEqual(resolved["config_source"], "checkpoint_inferred")
 
 
 if __name__ == "__main__":
