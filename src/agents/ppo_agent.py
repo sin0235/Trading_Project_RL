@@ -209,9 +209,9 @@ class PPOAgent:
         PPO clipped update trên buffer. Mini-batch shuffle, stateless hidden.
         Trả về dict training metrics.
         """
-        # Giữ eval mode để disable dropout trong lúc tính PPO objective.
-        # Gradients vẫn được tính bình thường trong PyTorch.
-        self.model.eval()
+        # PPO update phải chạy ở train mode để cuDNN cho phép backward qua LSTM.
+        # rollout/evaluate vẫn dùng eval() nên hành vi suy luận không đổi.
+        self.model.train()
         data = self.buffer.get_tensors(self.device)
 
         n = len(self.buffer)

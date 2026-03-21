@@ -122,6 +122,7 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertTrue(np.isfinite(update_stats["policy_loss"]))
         self.assertTrue(np.isfinite(update_stats["value_loss"]))
         self.assertTrue(np.isfinite(update_stats["entropy"]))
+        self.assertTrue(agent.model.training)
 
     def test_collect_rollout_preserves_episode_reward_across_calls(self):
         torch.manual_seed(0)
