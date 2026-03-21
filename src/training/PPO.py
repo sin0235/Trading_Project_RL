@@ -72,6 +72,8 @@ DEFAULT_CONFIG = {
     # --- Schedule ---
     "total_timesteps": 50_000,
     "lr_decay": True,
+    "lr_schedule": "linear",
+    "min_learning_rate": 1e-5,
     "eval_freq": 10,
     "save_freq": 5,
     "n_eval_episodes": 1,
@@ -137,7 +139,87 @@ def load_ppo_config(config_path: str | os.PathLike | None = None) -> dict:
 def resolve_ppo_config(config: dict | None = None,
                        config_path: str | os.PathLike | None = None) -> dict:
     yaml_cfg = load_ppo_config(config_path)
-    return {**DEFAULT_CONFIG, **yaml_cfg, **(config or {})}
+    runtime_cfg = config or {}
+    resolved = {**DEFAULT_CONFIG, **yaml_cfg, **runtime_cfg}
+
+    # Tương thích ngược với config cũ chỉ có lr_decay.
+    schedule_explicit = "lr_schedule" in yaml_cfg or "lr_schedule" in runtime_cfg
+    legacy_decay_explicit = "lr_decay" in yaml_cfg or "lr_decay" in runtime_cfg
+    if not schedule_explicit and legacy_decay_explicit:
+        resolved["lr_schedule"] = "linear" if resolved["lr_decay"] else "constant"
+
+    resolved["lr_schedule"] = str(resolved["lr_schedule"]).strip().lower()
+    valid_schedules = {"constant", "linear", "cosine"}
+    if resolved["lr_schedule"] not in valid_schedules:
+        raise ValueError(
+            f"lr_schedule không hợp lệ: {resolved['lr_schedule']}. "
+            f"Hỗ trợ: {sorted(valid_schedules)}"
+        )
+
+    if resolved["learning_rate"] <= 0:
+        raise ValueError("learning_rate phải > 0.")
+    if resolved["min_learning_rate"] <= 0:
+        raise ValueError("min_learning_rate phải > 0.")
+    if resolved["min_learning_rate"] > resolved["learning_rate"]:
+        raise ValueError("min_learning_rate không được lớn hơn learning_rate.")
+    if resolved["total_timesteps"] <= 0:
+        raise ValueError("total_timesteps phải > 0.")
+
+    return resolved
+
+
+def compute_learning_rate(
+    base_lr: float,
+    min_lr: float,
+    progress: float,
+    schedule: str,
+) -> float:
+    progress = min(max(float(progress), 0.0), 1.0)
+
+    if schedule == "constant":
+        return float(base_lr)
+
+    if schedule == "linear":
+        return float(min_lr + (base_lr - min_lr) * (1.0 - progress))
+
+    if schedule == "cosine":
+        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return float(min_lr + (base_lr - min_lr) * cosine_decay)
+
+    raise ValueError(f"Unsupported lr_schedule: {schedule}")
+
+
+def _checkpoint_step(path: Path) -> int:
+    stem = path.stem
+    if not stem.startswith("checkpoint_"):
+        return -1
+    try:
+        return int(stem.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
+def resolve_eval_checkpoint(ckpt_dir: str | os.PathLike | Path) -> tuple[Path | None, str]:
+    ckpt_dir = Path(ckpt_dir)
+    if not ckpt_dir.exists():
+        return None, "missing_dir"
+
+    best_path = ckpt_dir / "best_model.pt"
+    if best_path.exists():
+        return best_path, "best_model"
+
+    final_path = ckpt_dir / "final_model.pt"
+    if final_path.exists():
+        return final_path, "final_model"
+
+    checkpoint_paths = sorted(
+        ckpt_dir.glob("checkpoint_*.pt"),
+        key=lambda path: (_checkpoint_step(path), path.stat().st_mtime),
+    )
+    if checkpoint_paths:
+        return checkpoint_paths[-1], "latest_checkpoint"
+
+    return None, "no_checkpoint"
 
 
 def make_env(tickers, data_dict, config, for_eval=False):
@@ -317,6 +399,10 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         f"Reward function: {cfg['reward_name']} | "
         f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']}"
     )
+    logger.info(
+        f"LR schedule: {cfg['lr_schedule']} | "
+        f"base_lr={cfg['learning_rate']:.2e} | min_lr={cfg['min_learning_rate']:.2e}"
+    )
 
     # ----------------------------------------------------------------
     # 5. Training loop
@@ -337,12 +423,15 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             break
         rollout_steps = min(cfg["n_steps"], remaining_steps)
 
-        # LR linear decay
-        if cfg["lr_decay"]:
-            progress = agent.total_steps / cfg["total_timesteps"]
-            new_lr = cfg["learning_rate"] * (1.0 - progress)
-            new_lr = max(new_lr, 1e-6)
-            agent.set_lr(new_lr)
+        progress = agent.total_steps / cfg["total_timesteps"]
+        agent.set_lr(
+            compute_learning_rate(
+                base_lr=cfg["learning_rate"],
+                min_lr=cfg["min_learning_rate"],
+                progress=progress,
+                schedule=cfg["lr_schedule"],
+            )
+        )
 
         # Collect
         obs, ep_infos = agent.collect_rollout(
@@ -423,6 +512,8 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     if best_path.exists():
         agent.load(str(best_path))
         logger.info("Loaded best_model.pt for final test evaluation")
+    else:
+        logger.info("best_model.pt chưa tồn tại, dùng model hiện tại ở cuối training để final eval")
 
     test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
     test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]

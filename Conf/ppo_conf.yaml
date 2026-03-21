@@ -60,7 +60,8 @@ max_grad_norm: 0.5
 target_kl: 0.012
 
 total_timesteps: 200000
-lr_decay: true
+lr_schedule: linear
+min_learning_rate: 0.00002
 eval_freq: 5
 save_freq: 5
 n_eval_episodes: 1
