@@ -40,22 +40,26 @@ class StateSpace:
             # Use provided data_dict
             dfs = {}
             close_series = {}
+            open_series = {}
             for ticker in self.tickers:
                 df = self.data_dict[ticker].copy()
                 df['time'] = pd.to_datetime(df['time'])
                 df = df.set_index('time')
                 dfs[ticker] = df[self.features]
                 close_series[ticker] = df['close']
+                open_series[ticker] = df['open'] if 'open' in df.columns else df['close']
         else:
             # Load from files
             dfs = {}
             close_series = {}
+            open_series = {}
             for ticker in self.tickers:
                 file_path = os.path.join(self.data_path, f"{ticker}.csv")
                 df = pd.read_csv(file_path, parse_dates=['time'])
                 df = df.set_index('time')
                 dfs[ticker] = df[self.features]
                 close_series[ticker] = df['close']
+                open_series[ticker] = df['open'] if 'open' in df.columns else df['close']
 
         common_dates = dfs[self.tickers[0]].index
         for ticker in self.tickers[1:]:
@@ -73,6 +77,10 @@ class StateSpace:
 
         self.close_prices = np.stack(
             [close_series[t].loc[common_dates].values for t in self.tickers],
+            axis=1
+        )
+        self.open_prices = np.stack(
+            [open_series[t].loc[common_dates].values for t in self.tickers],
             axis=1
         )
 
@@ -138,8 +146,12 @@ class StateSpace:
         elif self.mode == 'sequential':
             return market_state.astype(np.float32), portfolio_state.astype(np.float32)
 
-    def get_prices(self, t: int) -> np.ndarray:
-        return self.close_prices[t]
+    def get_prices(self, t: int, field: str = "close") -> np.ndarray:
+        if field == "close":
+            return self.close_prices[t]
+        if field == "open":
+            return self.open_prices[t]
+        raise ValueError(f"Unsupported price field: {field}")
 
     def flat_obs_to_sequential(self, obs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

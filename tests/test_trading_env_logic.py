@@ -3,15 +3,23 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from src.environment.reward_function import AdvancedRewardFunction, TmpRewardFunction
 from src.environment.trading_env import TradingEnv
 
 
-def make_price_frame(n_days: int, close_start: float = 10.0) -> pd.DataFrame:
+def make_price_frame(
+    n_days: int,
+    close_start: float = 10.0,
+    open_values: np.ndarray | None = None,
+) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
     close = np.linspace(close_start, close_start + n_days - 1, n_days, dtype=np.float32)
+    if open_values is None:
+        open_values = close.copy()
     df = pd.DataFrame(
         {
             "time": dates,
+            "open": np.asarray(open_values, dtype=np.float32),
             "close": close,
             "close_norm": np.linspace(-1.0, 1.0, n_days, dtype=np.float32),
             "return_1d": np.zeros(n_days, dtype=np.float32),
@@ -68,6 +76,31 @@ class TradingEnvLogicTests(unittest.TestCase):
         self.assertIsNotNone(dummy_reward.calls[0][2])
         self.assertTrue(np.any(np.abs(dummy_reward.calls[0][2]) > 0))
 
+    def test_continuous_action_executes_at_next_open(self):
+        open_values = np.array([10.0, 10.0, 10.0, 20.0, 20.0], dtype=np.float32)
+        env = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict={"AAA": make_price_frame(5, close_start=10.0, open_values=open_values)},
+            window_size=3,
+            random_start=False,
+            min_shares=1,
+            initial_balance=100.0,
+            fee_rate=0.0,
+            reward_scaling=1.0,
+        )
+
+        env.reward_fn.calculate = lambda v_old, v_new, trade_amounts=None: v_new - v_old
+
+        env.reset()
+        _, reward, terminated, truncated, info = env.step(np.array([1.0, 0.0], dtype=np.float32))
+
+        self.assertFalse(terminated)
+        self.assertFalse(truncated)
+        self.assertEqual(info["execution_prices"][0], 20.0)
+        self.assertEqual(env.holdings[0], 5)
+        self.assertEqual(reward, -35.0)
+
     def test_random_start_respects_episode_boundary_and_seed(self):
         env = TradingEnv(
             tickers=["AAA"],
@@ -90,6 +123,44 @@ class TradingEnvLogicTests(unittest.TestCase):
         first_start = env.t
         env.reset(seed=123)
         self.assertEqual(first_start, env.t)
+
+    def test_reset_accepts_explicit_start_t(self):
+        env = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            max_steps=3,
+            random_start=True,
+        )
+
+        env.reset(options={"start_t": 31})
+        self.assertEqual(env.t, 31)
+
+    def test_env_can_select_reward_function_by_name(self):
+        env_tmp = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            random_start=False,
+            reward_name="tmp",
+            reward_kwargs={"window": 7},
+        )
+        env_advanced = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            random_start=False,
+            reward_name="advanced",
+            reward_kwargs={"window": 9},
+        )
+
+        self.assertIsInstance(env_tmp.reward_fn, TmpRewardFunction)
+        self.assertIsInstance(env_advanced.reward_fn, AdvancedRewardFunction)
+        self.assertEqual(env_tmp.reward_fn.window, 7)
+        self.assertEqual(env_advanced.reward_fn.window, 9)
 
     def test_short_dataset_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "window_size \\+ 1 common trading days"):

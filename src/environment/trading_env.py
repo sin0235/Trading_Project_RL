@@ -12,7 +12,7 @@ from src.environment.action_space import (
     decode_continuous_action,
     apply_constraints,
 )
-from src.environment.reward_function import AdvancedRewardFunction
+from src.environment.reward_function import build_reward_function
 from src.constants import WINDOW_SIZE, DATA_PATH, FEATURES
 
 
@@ -22,6 +22,14 @@ class TradingEnv(gym.Env):
     Ho tro 2 che do:
         - "discrete": DRQN/DQN (ho tro scalar action 0..K*N-1 va legacy per-stock vector)
         - "continuous": PPO (output vector [0,1]^(N+1), N stocks + 1 cash)
+
+    Semantics nghien cuu:
+        - Observation tai ngay t chi su dung du lieu den het ngay t
+        - Action tai ngay t duoc khop o gia mo cua ngay t+1
+        - Portfolio value / reward sau step duoc danh dau tai gia dong cua ngay t+1
+
+    Cach nay loai bo same-bar look-ahead bias nhung van giu mo hinh daily backtest
+    gon nhe, phu hop cho bai toan nghien cuu.
     """
     metadata = {"render_modes": ["human"]}
 
@@ -39,7 +47,9 @@ class TradingEnv(gym.Env):
         render_mode: Optional[str] = None,
         max_steps: int = 100,
         random_start: bool = True,
-        reward_scaling: float = 1e-4,
+        reward_scaling: float = 1.0,
+        reward_name: str = "tmp",
+        reward_kwargs: Optional[dict] = None,
         make_plots: bool = False,
         print_verbosity: int = 10,
         initial: bool = True,
@@ -55,6 +65,8 @@ class TradingEnv(gym.Env):
         self.fee_rate = fee_rate
         self.render_mode = render_mode
         self.reward_scaling = reward_scaling
+        self.reward_name = reward_name
+        self.reward_kwargs = dict(reward_kwargs or {})
         self.make_plots = make_plots
         self.print_verbosity = print_verbosity
         self.initial = initial
@@ -73,7 +85,7 @@ class TradingEnv(gym.Env):
             features=features,
             mode="flatten",
         )
-        self.reward_fn = AdvancedRewardFunction(window=30)
+        self.reward_fn = build_reward_function(self.reward_name, **self.reward_kwargs)
 
         self.n_stocks = self.state_space.n_stocks
         self.k = 3
@@ -125,13 +137,21 @@ class TradingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        if self.random_start:
-            min_t = self.state_space.window_size - 1
-            # Đảm bảo episode có thể chạy tối đa self.max_steps bước mà không vượt quá self.max_t
-            max_start_t = self.max_t - self.max_steps
+        min_t = self.state_space.window_size - 1
+        # Đảm bảo episode có thể chạy tối đa self.max_steps bước mà không vượt quá self.max_t
+        max_start_t = self.max_t - self.max_steps
+        requested_start = None if options is None else options.get("start_t")
+
+        if requested_start is not None:
+            self.t = int(requested_start)
+            if not (min_t <= self.t <= max_start_t):
+                raise ValueError(
+                    f"start_t ({self.t}) must be in [{min_t}, {max_start_t}]"
+                )
+        elif self.random_start:
             self.t = int(self.np_random.integers(min_t, max_start_t + 1))
         else:
-            self.t = self.state_space.window_size - 1
+            self.t = min_t
 
         if self.initial:
             self.cash = float(self.initial_balance)
@@ -163,7 +183,7 @@ class TradingEnv(gym.Env):
 
         self.episode += 1
 
-        prices = self.state_space.get_prices(self.t)
+        prices = self.state_space.get_prices(self.t, field="close")
         self.portfolio_value = self.cash + np.sum(self.holdings * prices)
 
         obs = self.state_space.get_state(self.t, self.cash, self.holdings)
@@ -180,14 +200,16 @@ class TradingEnv(gym.Env):
             raise RuntimeError("Cannot step from the last available trading day. Call reset().")
 
         self.current_step += 1
-        prices = self.state_space.get_prices(self.t)
-        v_old = self.cash + np.sum(self.holdings * prices)
+        current_close_prices = self.state_space.get_prices(self.t, field="close")
+        v_old = self.cash + np.sum(self.holdings * current_close_prices)
+        execution_t = self.t + 1
+        execution_prices = self.get_trade_prices(execution_t)
 
         "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "discrete":
             action = self._normalize_discrete_action(action)
             trade_amounts = decode_discrete_action(
-                action, self.n_stocks, self.min_shares, self.cash, self.holdings, prices,
+                action, self.n_stocks, self.min_shares, self.cash, self.holdings, execution_prices,
                 fee_rate=self.fee_rate,
             )
         else:
@@ -211,27 +233,37 @@ class TradingEnv(gym.Env):
             else:
                 action = action / s
 
-            ratio = self.state_space.get_portfolio_state(self.cash, self.holdings, prices)
-            trade_amounts = decode_continuous_action(action, ratio, self.cash, self.holdings, prices)
+            ratio = self.state_space.get_portfolio_state(self.cash, self.holdings, execution_prices)
+            trade_amounts = decode_continuous_action(
+                action, ratio, self.cash, self.holdings, execution_prices
+            )
 
         trade_amounts = apply_constraints(
-            trade_amounts, self.cash, self.holdings, prices, self.fee_rate, self.min_shares
+            trade_amounts, self.cash, self.holdings, execution_prices, self.fee_rate, self.min_shares
         )
 
-        total_fees = self._execute_trades(trade_amounts, prices)
+        total_fees = self._execute_trades(trade_amounts, execution_prices)
         self.cash = max(0.0, self.cash)
         self.cost += total_fees
         self.trades += int(np.sum(np.abs(trade_amounts) > 0))
         "-------------------------------------END ACTION-------------------------------------------"
 
-        # Tiến tới ngày tiếp theo nhưng KHÔNG vượt quá self.max_t để tránh out-of-range
-        self.t = min(self.t + 1, self.max_t)
+        # Sau khi khop lenh o ngay t+1 (gia mo), danh dau gia tri danh muc tai gia dong ngay t+1.
+        self.t = execution_t
 
-        new_prices = self.state_space.get_prices(self.t)
+        new_prices = self.state_space.get_prices(self.t, field="close")
         v_new = self.cash + np.sum(self.holdings * new_prices)
         self.portfolio_value = v_new
 
-        reward = self.reward_fn.calculate(v_old, v_new, trade_amounts)
+        post_trade_value = self.cash + np.sum(self.holdings * execution_prices)
+        reward = self._calculate_reward(
+            v_old=v_old,
+            v_new=v_new,
+            trade_amounts=trade_amounts,
+            execution_prices=execution_prices,
+            next_prices=new_prices,
+            post_trade_value=post_trade_value,
+        )
         # Scale reward giống FinRL
         reward = reward * self.reward_scaling
 
@@ -247,7 +279,12 @@ class TradingEnv(gym.Env):
         truncated = False
         self._terminated = terminated or truncated
 
-        info = self._build_info(new_prices, trade_amounts, total_fees)
+        info = self._build_info(
+            new_prices,
+            trade_amounts,
+            total_fees,
+            execution_prices=execution_prices,
+        )
 
         # Logging at episode end
         if terminated:
@@ -342,12 +379,49 @@ class TradingEnv(gym.Env):
 
         return total_fees
 
-    def _build_info(self, prices, trades=None, fees=0.0):
+    def get_trade_prices(self, t: Optional[int] = None) -> np.ndarray:
+        if self.t is None and t is None:
+            raise RuntimeError("Environment must be reset before accessing trade prices.")
+
+        trade_t = (self.t + 1) if t is None else int(t)
+        if trade_t > self.max_t:
+            raise RuntimeError(
+                f"Trade prices for t={trade_t} are not available (max_t={self.max_t})."
+            )
+        return self.state_space.get_prices(trade_t, field="open")
+
+    def _calculate_reward(
+        self,
+        v_old: float,
+        v_new: float,
+        trade_amounts: np.ndarray,
+        execution_prices: np.ndarray,
+        next_prices: np.ndarray,
+        post_trade_value: float,
+    ) -> float:
+        try:
+            return float(
+                self.reward_fn.calculate(
+                    v_old,
+                    v_new,
+                    trade_amounts=trade_amounts,
+                    execution_prices=execution_prices,
+                    next_prices=next_prices,
+                    post_trade_value=post_trade_value,
+                )
+            )
+        except TypeError:
+            return float(self.reward_fn.calculate(v_old, v_new, trade_amounts))
+
+    def _build_info(self, prices, trades=None, fees=0.0, execution_prices=None):
+        if execution_prices is None:
+            execution_prices = prices
         return {
             "portfolio_value": self.portfolio_value,
             "cash": self.cash,
             "holdings": self.holdings.copy(),
             "prices": prices.copy(),
+            "execution_prices": np.asarray(execution_prices).copy(),
             "trades": trades if trades is not None else np.zeros(self.n_stocks, dtype=np.int32),
             "fees": fees,
             "date": str(self.state_space.dates[self.t]),

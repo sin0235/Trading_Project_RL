@@ -37,7 +37,9 @@ initial_balance: 1000000000
 fee_rate: 0.0015
 max_steps_train: 256
 max_steps_eval: 9999
-reward_scaling: 0.0005
+reward_scaling: 1.0
+reward_name: tmp
+reward_window: 20
 
 hidden_size: 128
 num_layers: 1

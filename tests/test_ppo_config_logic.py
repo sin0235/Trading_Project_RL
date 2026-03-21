@@ -16,6 +16,7 @@ class PPOConfigLogicTests(unittest.TestCase):
                     fee_rate: 0.002
                     total_timesteps: 12345
                     n_eval_episodes: 1
+                    reward_name: tmp
                     """
                 ).strip(),
                 encoding="utf-8",
@@ -26,6 +27,7 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(cfg["fee_rate"], 0.002)
             self.assertEqual(cfg["total_timesteps"], 12345)
             self.assertEqual(cfg["n_eval_episodes"], 1)
+            self.assertEqual(cfg["reward_name"], "tmp")
 
     def test_resolve_ppo_config_merge_priority(self):
         with tempfile.TemporaryDirectory() as tmpdir:

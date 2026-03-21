@@ -46,7 +46,9 @@ DEFAULT_CONFIG = {
     "fee_rate": 0.0015,
     "max_steps_train": 200,
     "max_steps_eval": 9999,
-    "reward_scaling": 1e-4,
+    "reward_scaling": 1.0,
+    "reward_name": "tmp",
+    "reward_window": 20,
 
     # --- Model (LSTM) ---
     "hidden_size": 128,
@@ -150,6 +152,8 @@ def make_env(tickers, data_dict, config, for_eval=False):
         max_steps=config["max_steps_eval"] if for_eval else config["max_steps_train"],
         random_start=not for_eval,
         reward_scaling=config["reward_scaling"],
+        reward_name=config["reward_name"],
+        reward_kwargs={"window": config["reward_window"]},
         print_verbosity=999999,
     )
 
@@ -165,6 +169,78 @@ def average_metrics(metrics_list: list[dict]) -> dict:
         if vals:
             avg_metrics[key] = float(np.mean(vals))
     return avg_metrics
+
+
+def run_rule_based_episode(env: TradingEnv, policy_fn) -> list[float]:
+    obs, _ = env.reset()
+    done = False
+    values = [env.portfolio_value]
+    step_idx = 0
+
+    while not done:
+        action = np.asarray(policy_fn(step_idx, obs, env), dtype=np.float32)
+        obs, _, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        values.append(env.portfolio_value)
+        step_idx += 1
+
+    return values
+
+
+def equal_weight_baseline_values(env: TradingEnv) -> list[float]:
+    target = np.full(env.n_stocks + 1, 1.0 / (env.n_stocks + 1), dtype=np.float32)
+    return run_rule_based_episode(env, lambda _step_idx, _obs, _env: target)
+
+
+def buy_and_hold_baseline_values(env: TradingEnv) -> list[float]:
+    initial_target = np.full(env.n_stocks + 1, 1.0 / (env.n_stocks + 1), dtype=np.float32)
+
+    def policy_fn(step_idx, _obs, rollout_env: TradingEnv):
+        if step_idx == 0:
+            return initial_target
+
+        # Dung ty trong tai gia mo session ke tiep de giu nguyen holdings, tranh tai can bang gia tao.
+        next_trade_prices = rollout_env.get_trade_prices()
+        return rollout_env.state_space.get_portfolio_state(
+            rollout_env.cash, rollout_env.holdings, next_trade_prices
+        ).astype(np.float32)
+
+    return run_rule_based_episode(env, policy_fn)
+
+
+def evaluate_baselines(env: TradingEnv, initial_balance: float) -> dict[str, dict]:
+    baselines = {
+        "equal_weight": compute_all(equal_weight_baseline_values(env), initial_balance),
+        "buy_and_hold_equal_weight": compute_all(buy_and_hold_baseline_values(env), initial_balance),
+    }
+    return baselines
+
+
+def build_baseline_comparison(model_metrics: dict, baseline_metrics: dict) -> dict:
+    return {
+        "baseline_metrics": baseline_metrics,
+        "delta_total_return": float(
+            model_metrics.get("total_return", 0.0) - baseline_metrics.get("total_return", 0.0)
+        ),
+        "delta_sharpe_ratio": float(
+            model_metrics.get("sharpe_ratio", 0.0) - baseline_metrics.get("sharpe_ratio", 0.0)
+        ),
+        "delta_max_drawdown": float(
+            model_metrics.get("max_drawdown", 0.0) - baseline_metrics.get("max_drawdown", 0.0)
+        ),
+    }
+
+
+def format_baseline_comparison(label: str, model_metrics: dict, baseline_metrics: dict) -> str:
+    delta_return = model_metrics.get("total_return", 0.0) - baseline_metrics.get("total_return", 0.0)
+    delta_sharpe = model_metrics.get("sharpe_ratio", 0.0) - baseline_metrics.get("sharpe_ratio", 0.0)
+    return (
+        f"[BASELINE/{label}] "
+        f"baseline_return={baseline_metrics.get('total_return', 0):.2%} | "
+        f"baseline_sharpe={baseline_metrics.get('sharpe_ratio', 0):.4f} | "
+        f"delta_return={delta_return:.2%} | "
+        f"delta_sharpe={delta_sharpe:.4f}"
+    )
 
 
 def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None):
@@ -237,6 +313,10 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     )
     logger.info(f"Data split: {split.summary()}")
     logger.info(f"Device: {agent.device} | Params: {total_params:,}")
+    logger.info(
+        f"Reward function: {cfg['reward_name']} | "
+        f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']}"
+    )
 
     # ----------------------------------------------------------------
     # 5. Training loop
@@ -245,6 +325,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     episode_counter = 0
     best_val_sharpe = -np.inf
     obs = None
+    latest_val_baselines = None
 
     save_dir = logger.get_run_dir() / "checkpoints"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -316,8 +397,15 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
             val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
             avg_val_metrics = average_metrics(val_metrics_list)
+            val_baselines = evaluate_baselines(val_env, cfg["initial_balance"])
+            latest_val_baselines = {
+                name: build_baseline_comparison(avg_val_metrics, metrics)
+                for name, metrics in val_baselines.items()
+            }
             logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val")
             logger.info(f"\n{format_report(avg_val_metrics)}")
+            for name, metrics in val_baselines.items():
+                logger.info(format_baseline_comparison(name.upper(), avg_val_metrics, metrics))
 
             if avg_val_metrics.get("sharpe_ratio", -np.inf) > best_val_sharpe:
                 best_val_sharpe = avg_val_metrics["sharpe_ratio"]
@@ -339,10 +427,13 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
     test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]
     avg_test = average_metrics(test_metrics_list)
+    test_baselines = evaluate_baselines(test_env, cfg["initial_balance"])
 
     logger.log_eval(episode=episode_counter, metrics=avg_test, split="test")
     logger.info(f"\n=== FINAL TEST RESULTS (avg {len(test_values)} episodes) ===")
     logger.info(f"\n{format_report(avg_test)}")
+    for name, metrics in test_baselines.items():
+        logger.info(format_baseline_comparison(name.upper(), avg_test, metrics))
 
     # ----------------------------------------------------------------
     # 7. Summary
@@ -354,6 +445,13 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             "data_split": split.summary(),
             "total_episodes": episode_counter,
             "best_val_sharpe": best_val_sharpe,
+            "baseline_comparisons": {
+                "val": latest_val_baselines,
+                "test": {
+                    name: build_baseline_comparison(avg_test, metrics)
+                    for name, metrics in test_baselines.items()
+                },
+            },
         },
     )
 

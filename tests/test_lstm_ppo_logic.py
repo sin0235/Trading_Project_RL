@@ -7,15 +7,26 @@ import torch
 from src.agents.ppo_agent import PPOAgent
 from src.environment.trading_env import TradingEnv
 from src.models.lstm import DRQNNetwork, LSTMFeatureExtractor, PPOLSTMActorCritic
-from src.training.PPO import average_metrics
+from src.training.PPO import (
+    average_metrics,
+    build_baseline_comparison,
+    evaluate_baselines,
+)
 
 
-def make_price_frame(n_days: int, close_start: float = 10.0) -> pd.DataFrame:
+def make_price_frame(
+    n_days: int,
+    close_start: float = 10.0,
+    open_values: np.ndarray | None = None,
+) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
     close = np.linspace(close_start, close_start + n_days - 1, n_days, dtype=np.float32)
+    if open_values is None:
+        open_values = close.copy()
     return pd.DataFrame(
         {
             "time": dates,
+            "open": np.asarray(open_values, dtype=np.float32),
             "close": close,
             "close_norm": np.linspace(-1.0, 1.0, n_days, dtype=np.float32),
             "return_1d": np.zeros(n_days, dtype=np.float32),
@@ -217,6 +228,28 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertEqual(metrics["a"], 2.0)
         self.assertEqual(metrics["b"], 4.0)
         self.assertEqual(metrics["c"], 7.0)
+
+    def test_evaluate_baselines_returns_comparable_metrics(self):
+        tickers = ("AAA", "BBB")
+        env = TradingEnv(
+            tickers=list(tickers),
+            mode="continuous",
+            data_dict=make_data_dict(60, tickers),
+            window_size=30,
+            random_start=False,
+            max_steps=5,
+        )
+
+        baselines = evaluate_baselines(env, env.initial_balance)
+        comparison = build_baseline_comparison(
+            {"total_return": 0.2, "sharpe_ratio": 1.0, "max_drawdown": 0.1},
+            baselines["equal_weight"],
+        )
+
+        self.assertIn("equal_weight", baselines)
+        self.assertIn("buy_and_hold_equal_weight", baselines)
+        self.assertIn("delta_total_return", comparison)
+        self.assertIn("delta_sharpe_ratio", comparison)
 
 
 if __name__ == "__main__":
