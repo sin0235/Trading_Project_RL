@@ -15,6 +15,7 @@ Chạy:
 import os
 import sys
 import math
+import json
 import random
 import numpy as np
 import torch
@@ -220,6 +221,28 @@ def resolve_eval_checkpoint(ckpt_dir: str | os.PathLike | Path) -> tuple[Path | 
         return checkpoint_paths[-1], "latest_checkpoint"
 
     return None, "no_checkpoint"
+
+
+def load_run_config(
+    run_dir: str | os.PathLike | Path,
+    overrides: dict | None = None,
+) -> dict:
+    run_dir = Path(run_dir)
+    config_path = run_dir / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy config.json trong run: {run_dir}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw_cfg = json.load(f) or {}
+
+    if not isinstance(raw_cfg, dict):
+        raise ValueError(f"config.json của run phải là dict, nhận được: {type(raw_cfg).__name__}")
+
+    run_cfg = {k: v for k, v in raw_cfg.items() if k in DEFAULT_CONFIG}
+    if overrides:
+        run_cfg.update(overrides)
+
+    return resolve_ppo_config(config=run_cfg)
 
 
 def make_env(tickers, data_dict, config, for_eval=False):

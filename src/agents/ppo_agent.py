@@ -364,7 +364,14 @@ class PPOAgent:
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state_dict"])
+        try:
+            self.model.load_state_dict(ckpt["model_state_dict"])
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Checkpoint không khớp với kiến trúc model hiện tại. "
+                "Hãy khởi tạo agent/model từ đúng config của run đã train rồi load lại. "
+                f"Checkpoint: {path}\n\nChi tiết gốc:\n{exc}"
+            ) from exc
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.total_steps = ckpt.get("total_steps", 0)
         self.n_updates = ckpt.get("n_updates", 0)

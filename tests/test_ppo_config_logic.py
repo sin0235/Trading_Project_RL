@@ -8,6 +8,7 @@ from src.training.PPO import (
     compute_learning_rate,
     load_ppo_config,
     resolve_eval_checkpoint,
+    load_run_config,
     resolve_ppo_config,
 )
 
@@ -106,6 +107,38 @@ class PPOConfigLogicTests(unittest.TestCase):
             path, source = resolve_eval_checkpoint(ckpt_dir)
             self.assertEqual(path.name, "best_model.pt")
             self.assertEqual(source, "best_model")
+
+    def test_load_run_config_uses_run_specific_model_shape_and_fills_new_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            (run_dir / "config.json").write_text(
+                textwrap.dedent(
+                    """
+                    {
+                      "run_id": "ppo_old",
+                      "agent": "PPO_LSTM",
+                      "hidden_size": 32,
+                      "num_layers": 1,
+                      "dropout": 0.0,
+                      "window_size": 30,
+                      "learning_rate": 0.0003,
+                      "n_steps": 16,
+                      "batch_size": 8,
+                      "n_epochs": 1,
+                      "total_timesteps": 32,
+                      "device": "cpu"
+                    }
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(run_dir, overrides={"device": "auto"})
+
+            self.assertEqual(cfg["hidden_size"], 32)
+            self.assertEqual(cfg["num_layers"], 1)
+            self.assertEqual(cfg["device"], "auto")
+            self.assertEqual(cfg["reward_name"], DEFAULT_CONFIG["reward_name"])
 
 
 if __name__ == "__main__":
