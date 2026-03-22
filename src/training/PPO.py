@@ -264,7 +264,10 @@ def load_run_config(
     if not isinstance(raw_cfg, dict):
         raise ValueError(f"config.json của run phải là dict, nhận được: {type(raw_cfg).__name__}")
 
-    run_cfg = {k: v for k, v in raw_cfg.items() if k in DEFAULT_CONFIG}
+    # Khi load config của một run đã train, ưu tiên tuyệt đối config đã được lưu
+    # cùng DEFAULT_CONFIG trong code để lấp đầy các key mới.
+    # Không để YAML hiện tại của project vô tình ghi đè metadata run cũ.
+    run_cfg = {**DEFAULT_CONFIG, **{k: v for k, v in raw_cfg.items() if k in DEFAULT_CONFIG}}
     if overrides:
         run_cfg.update(overrides)
 

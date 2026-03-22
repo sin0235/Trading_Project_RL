@@ -166,6 +166,40 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(cfg["device"], "auto")
             self.assertEqual(cfg["reward_name"], DEFAULT_CONFIG["reward_name"])
 
+    def test_load_run_config_does_not_inherit_yaml_defaults_from_current_project(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            (run_dir / "config.json").write_text(
+                textwrap.dedent(
+                    """
+                    {
+                      "run_id": "ppo_old",
+                      "agent": "PPO_LSTM",
+                      "reward_name": "sharpe",
+                      "hidden_size": 64,
+                      "num_layers": 1,
+                      "dropout": 0.0,
+                      "window_size": 30,
+                      "learning_rate": 0.0003,
+                      "n_steps": 16,
+                      "batch_size": 8,
+                      "n_epochs": 1,
+                      "total_timesteps": 32
+                    }
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            cfg = load_run_config(run_dir)
+
+            self.assertEqual(cfg["reward_name"], "sharpe")
+            self.assertEqual(cfg["trade_deadband"], DEFAULT_CONFIG["trade_deadband"])
+            self.assertEqual(
+                cfg["max_weight_change_per_step"],
+                DEFAULT_CONFIG["max_weight_change_per_step"],
+            )
+
     def test_infer_run_config_from_checkpoint_recovers_model_shape(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             ckpt_path = Path(tmpdir) / "best_model.pt"
