@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from src.environment.reward_function import AdvancedRewardFunction, TmpRewardFunction
+from src.environment.reward_function import AdvancedRewardFunction, SharpeRewardFunction, SharpePlusRewardFunction
 from src.environment.trading_env import TradingEnv
 
 
@@ -198,14 +198,23 @@ class TradingEnvLogicTests(unittest.TestCase):
         self.assertEqual(env.t, 31)
 
     def test_env_can_select_reward_function_by_name(self):
-        env_tmp = TradingEnv(
+        env_sharpe = TradingEnv(
             tickers=["AAA"],
             mode="continuous",
             data_dict=make_data_dict(40, ("AAA",)),
             window_size=30,
             random_start=False,
-            reward_name="tmp",
+            reward_name="sharpe",
             reward_kwargs={"window": 7},
+        )
+        env_sharpe_plus = TradingEnv(
+            tickers=["AAA"],
+            mode="continuous",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            random_start=False,
+            reward_name="sharpe_plus",
+            reward_kwargs={"window": 10},
         )
         env_advanced = TradingEnv(
             tickers=["AAA"],
@@ -217,9 +226,11 @@ class TradingEnvLogicTests(unittest.TestCase):
             reward_kwargs={"window": 9},
         )
 
-        self.assertIsInstance(env_tmp.reward_fn, TmpRewardFunction)
+        self.assertIsInstance(env_sharpe.reward_fn, SharpeRewardFunction)
+        self.assertIsInstance(env_sharpe_plus.reward_fn, SharpePlusRewardFunction)
         self.assertIsInstance(env_advanced.reward_fn, AdvancedRewardFunction)
-        self.assertEqual(env_tmp.reward_fn.window, 7)
+        self.assertEqual(env_sharpe.reward_fn.window, 7)
+        self.assertEqual(env_sharpe_plus.reward_fn.window, 10)
         self.assertEqual(env_advanced.reward_fn.window, 9)
 
     def test_short_dataset_is_rejected(self):

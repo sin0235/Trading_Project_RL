@@ -3,8 +3,8 @@ from collections import deque
 
 
 """
-Giữ lại reward cũ để tham chiếu / tương thích.
-Reward mới tạm thời cho dự án hiện tại nằm ở class TmpRewardFunction bên dưới.
+Giữ lại reward cũ (AdvancedRewardFunction) để tham chiếu / tương thích.
+Reward chính: SharpeRewardFunction, SharpePlusRewardFunction.
 """
 
 
@@ -67,126 +67,11 @@ class AdvancedRewardFunction:
         # Clip reward để tránh nhiễu quá lớn cho Agent
         return float(np.clip(reward, -1.0, 1.0))
 
-
-class TmpRewardFunction:
-    """
-    Reward tam thoi cho bai toan hien tai.
-
-    Muc tieu:
-        - Thuong agent khi outperform baseline equal-weight + cash trong cung session giao dich
-        - Phat downside excess return de uu tien alpha on dinh thay vi may man
-        - Phat drawdown de tranh hoc theo kieu all-in roi chiu rut von sau do
-        - Phat turnover theo notional / NAV thay vi so co phieu thuan tuy
-
-    Ky hieu:
-        portfolio_return = log(V_close / V_after_trade_open)
-        benchmark_return = equal-weight basket + cash trong cung open->close
-        excess_return = portfolio_return - benchmark_return
-    """
-
-    def __init__(
-        self,
-        window: int = 20,
-        excess_scale: float = 100.0,
-        downside_scale: float = 25.0,
-        drawdown_scale: float = 2.0,
-        turnover_scale: float = 0.5,
-    ):
-        self.window = window
-        self.excess_scale = excess_scale
-        self.downside_scale = downside_scale
-        self.drawdown_scale = drawdown_scale
-        self.turnover_scale = turnover_scale
-
-        self.excess_return_history = deque(maxlen=window)
-        self.max_portfolio_value = -np.inf
-
-    def reset(self):
-        self.excess_return_history.clear()
-        self.max_portfolio_value = -np.inf
-
-    @staticmethod
-    def _safe_log_return(v_from: float, v_to: float) -> float:
-        if v_from <= 0 or v_to <= 0:
-            return 0.0
-        return float(np.log(v_to / v_from))
-
-    @staticmethod
-    def _equal_weight_cash_benchmark_log_return(
-        execution_prices: np.ndarray | None,
-        next_prices: np.ndarray | None,
-    ) -> float:
-        if execution_prices is None or next_prices is None:
-            return 0.0
-
-        exec_arr = np.asarray(execution_prices, dtype=np.float64)
-        next_arr = np.asarray(next_prices, dtype=np.float64)
-        valid = np.isfinite(exec_arr) & np.isfinite(next_arr) & (exec_arr > 0) & (next_arr > 0)
-        if not np.any(valid):
-            return 0.0
-
-        stock_growth = next_arr[valid] / exec_arr[valid]
-        # +1.0 la bucket tien mat, de benchmark cung song song voi action space N stocks + 1 cash.
-        benchmark_growth = (float(np.sum(stock_growth)) + 1.0) / (len(stock_growth) + 1.0)
-        return float(np.log(max(benchmark_growth, 1e-12)))
-
-    def calculate(
-        self,
-        v_old: float,
-        v_new: float,
-        trade_amounts: np.ndarray = None,
-        *,
-        execution_prices: np.ndarray | None = None,
-        next_prices: np.ndarray | None = None,
-        post_trade_value: float | None = None,
-    ) -> float:
-        if post_trade_value is None:
-            post_trade_value = v_old
-
-        if v_old <= 0 or post_trade_value <= 0 or v_new <= 0:
-            return -5.0
-
-        portfolio_log_return = self._safe_log_return(post_trade_value, v_new)
-        benchmark_log_return = self._equal_weight_cash_benchmark_log_return(
-            execution_prices=execution_prices,
-            next_prices=next_prices,
-        )
-        excess_log_return = portfolio_log_return - benchmark_log_return
-        self.excess_return_history.append(excess_log_return)
-
-        downside_penalty = 0.0
-        if self.excess_return_history:
-            history = np.array(self.excess_return_history, dtype=np.float64)
-            downside = np.minimum(history, 0.0)
-            downside_penalty = float(np.sqrt(np.mean(np.square(downside))))
-
-        self.max_portfolio_value = max(self.max_portfolio_value, v_new)
-        drawdown_penalty = float(
-            max(0.0, (self.max_portfolio_value - v_new) / max(self.max_portfolio_value, 1e-12))
-        )
-
-        turnover_penalty = 0.0
-        if trade_amounts is not None and execution_prices is not None:
-            traded_value = float(
-                np.sum(np.abs(np.asarray(trade_amounts, dtype=np.float64)) * np.asarray(execution_prices, dtype=np.float64))
-            )
-            turnover_penalty = traded_value / max(post_trade_value, 1e-12)
-
-        reward = (
-            self.excess_scale * excess_log_return
-            - self.downside_scale * downside_penalty
-            - self.drawdown_scale * drawdown_penalty
-            - self.turnover_scale * turnover_penalty
-        )
-
-        return float(np.clip(reward, -5.0, 5.0))
-
-
 class SharpeRewardFunction:
     """
     Reward dua tren rolling Sharpe ratio cua excess return.
 
-    Thay vi thuong truc tiep excess return (nhu TmpRewardFunction),
+    Thay vi thuong truc tiep excess return,
     reward nay uu tien excess return ON DINH bang cach dung
     risk-adjusted signal: mean(excess) / std(excess).
 
@@ -311,12 +196,165 @@ class SharpeRewardFunction:
         return float(np.clip(reward, -5.0, 5.0))
 
 
-def build_reward_function(name: str = "tmp", **kwargs):
-    normalized = str(name or "tmp").strip().lower()
-    if normalized in {"tmp", "tmp_reward", "tmpreward"}:
-        return TmpRewardFunction(**kwargs)
+class SharpePlusRewardFunction:
+    """
+    Reward nang cao dua tren Sharpe + 3 ky thuat bo sung:
+
+    1. Holding bonus: thuong agent khi giu vi the on dinh (khong overtrade)
+    2. Momentum alignment: thuong khi portfolio di cung chieu trend thi truong
+    3. Asymmetric drawdown: phat nang hon khi drawdown vuot nguong
+
+    Cong thuc:
+        reward = sharpe_scale * rolling_sharpe
+               + excess_scale * excess_return
+               + holding_scale * holding_bonus
+               + momentum_scale * momentum_bonus
+               - drawdown_scale * asymmetric_dd_penalty
+               - turnover_scale * turnover_ratio
+    """
+
+    def __init__(
+        self,
+        window: int = 30,
+        sharpe_scale: float = 1.0,
+        excess_scale: float = 50.0,
+        holding_scale: float = 0.3,
+        momentum_scale: float = 0.5,
+        drawdown_scale: float = 5.0,
+        turnover_scale: float = 0.8,
+        dd_threshold: float = 0.05,
+        dd_escalation: float = 3.0,
+    ):
+        self.window = window
+        self.sharpe_scale = sharpe_scale
+        self.excess_scale = excess_scale
+        self.holding_scale = holding_scale
+        self.momentum_scale = momentum_scale
+        self.drawdown_scale = drawdown_scale
+        self.turnover_scale = turnover_scale
+        self.dd_threshold = dd_threshold
+        self.dd_escalation = dd_escalation
+
+        self.excess_return_history = deque(maxlen=window)
+        self.max_portfolio_value = -np.inf
+
+    def reset(self):
+        self.excess_return_history.clear()
+        self.max_portfolio_value = -np.inf
+
+    @staticmethod
+    def _safe_log_return(v_from: float, v_to: float) -> float:
+        if v_from <= 0 or v_to <= 0:
+            return 0.0
+        return float(np.log(v_to / v_from))
+
+    @staticmethod
+    def _equal_weight_cash_benchmark_log_return(
+        execution_prices: np.ndarray | None,
+        next_prices: np.ndarray | None,
+    ) -> float:
+        if execution_prices is None or next_prices is None:
+            return 0.0
+        exec_arr = np.asarray(execution_prices, dtype=np.float64)
+        next_arr = np.asarray(next_prices, dtype=np.float64)
+        valid = np.isfinite(exec_arr) & np.isfinite(next_arr) & (exec_arr > 0) & (next_arr > 0)
+        if not np.any(valid):
+            return 0.0
+        stock_growth = next_arr[valid] / exec_arr[valid]
+        benchmark_growth = (float(np.sum(stock_growth)) + 1.0) / (len(stock_growth) + 1.0)
+        return float(np.log(max(benchmark_growth, 1e-12)))
+
+    def calculate(
+        self,
+        v_old: float,
+        v_new: float,
+        trade_amounts: np.ndarray = None,
+        *,
+        execution_prices: np.ndarray | None = None,
+        next_prices: np.ndarray | None = None,
+        post_trade_value: float | None = None,
+    ) -> float:
+        if post_trade_value is None:
+            post_trade_value = v_old
+
+        if v_old <= 0 or post_trade_value <= 0 or v_new <= 0:
+            return -5.0
+
+        # --- 1. Excess return vs benchmark ---
+        portfolio_log_return = self._safe_log_return(post_trade_value, v_new)
+        benchmark_log_return = self._equal_weight_cash_benchmark_log_return(
+            execution_prices=execution_prices,
+            next_prices=next_prices,
+        )
+        excess_log_return = portfolio_log_return - benchmark_log_return
+        self.excess_return_history.append(excess_log_return)
+
+        # --- 2. Rolling Sharpe component ---
+        sharpe_reward = 0.0
+        if len(self.excess_return_history) >= 2:
+            history = np.array(self.excess_return_history, dtype=np.float64)
+            mean_excess = float(np.mean(history))
+            std_excess = float(np.std(history))
+            if std_excess > 1e-8:
+                sharpe_reward = mean_excess / std_excess
+            else:
+                sharpe_reward = np.sign(mean_excess) * 2.0
+
+        # --- 3. Direct excess return ---
+        direct_excess = self.excess_scale * excess_log_return
+
+        # --- 4. Turnover ratio ---
+        turnover_ratio = 0.0
+        if trade_amounts is not None and execution_prices is not None:
+            traded_value = float(
+                np.sum(
+                    np.abs(np.asarray(trade_amounts, dtype=np.float64))
+                    * np.asarray(execution_prices, dtype=np.float64)
+                )
+            )
+            turnover_ratio = traded_value / max(post_trade_value, 1e-12)
+
+        # --- 5. Holding bonus (KY THUAT NANG CAO 1) ---
+        # Thuong agent khi giu vi the on dinh, turnover_ratio thap -> bonus cao
+        holding_bonus = max(0.0, 1.0 - turnover_ratio)
+
+        # --- 6. Momentum alignment (KY THUAT NANG CAO 2) ---
+        # Thuong khi portfolio return cung chieu benchmark return
+        momentum_bonus = 0.0
+        if abs(benchmark_log_return) > 1e-10:
+            # Positive khi cung chieu, negative khi nguoc chieu
+            alignment = portfolio_log_return * benchmark_log_return
+            momentum_bonus = max(0.0, alignment) / (abs(benchmark_log_return) + 1e-8)
+
+        # --- 7. Asymmetric drawdown penalty (KY THUAT NANG CAO 3) ---
+        self.max_portfolio_value = max(self.max_portfolio_value, v_new)
+        drawdown = float(
+            max(0.0, (self.max_portfolio_value - v_new) / max(self.max_portfolio_value, 1e-12))
+        )
+        dd_penalty = drawdown
+        if drawdown > self.dd_threshold:
+            # Phat tang nhanh khi vuot nguong
+            dd_penalty *= (1.0 + self.dd_escalation * (drawdown - self.dd_threshold))
+
+        # --- TONG HOP ---
+        reward = (
+            self.sharpe_scale * sharpe_reward
+            + direct_excess
+            + self.holding_scale * holding_bonus
+            + self.momentum_scale * momentum_bonus
+            - self.drawdown_scale * dd_penalty
+            - self.turnover_scale * turnover_ratio
+        )
+
+        return float(np.clip(reward, -5.0, 5.0))
+
+
+def build_reward_function(name: str = "sharpe", **kwargs):
+    normalized = str(name or "sharpe").strip().lower()
     if normalized in {"sharpe", "sharpe_reward", "sharpereward"}:
         return SharpeRewardFunction(**kwargs)
+    if normalized in {"sharpe_plus", "sharpeplus", "sharpe_plus_reward"}:
+        return SharpePlusRewardFunction(**kwargs)
     if normalized in {"advanced", "legacy", "advanced_reward"}:
         return AdvancedRewardFunction(**kwargs)
     raise ValueError(f"Unsupported reward function: {name}")

@@ -48,7 +48,7 @@ class TradingEnv(gym.Env):
         max_steps: int = 100,
         random_start: bool = True,
         reward_scaling: float = 1.0,
-        reward_name: str = "tmp",
+        reward_name: str = "sharpe",
         reward_kwargs: Optional[dict] = None,
         trade_deadband: float = 0.0,
         max_weight_change_per_step: float = 1.0,
