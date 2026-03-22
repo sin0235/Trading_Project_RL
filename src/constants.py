@@ -28,3 +28,8 @@ DATA_PATH = "data/processed"
 FEATURES = [
     'close_norm', 'return_1d', 'return_5d', 'macd', 'rsi', 'adx', 'volume_norm'
 ]
+
+FEATURES_EXTENDED = [
+    'close_norm', 'return_1d', 'return_5d', 'return_20d',
+    'macd', 'rsi', 'adx', 'volume_norm', 'volatility_20d'
+]

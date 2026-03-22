@@ -20,14 +20,16 @@ features:
   - close_norm
   - return_1d
   - return_5d
+  - return_20d
   - macd
   - rsi
   - adx
   - volume_norm
+  - volatility_20d
 
-window_size: 60
+window_size: 30
 
-data_path: data/processed
+data_path: data/processed_v2
 
 train_ratio: 0.7
 val_ratio: 0.15

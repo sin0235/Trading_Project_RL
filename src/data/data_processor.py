@@ -144,3 +144,40 @@ class DataProcessor:
             file_path = os.path.join(folder_path, name)
             data.to_csv(file_path, index=False)
             print(f"Da luu: {file_path}")
+
+    # ---------------------------------------------------------------------------
+    # EXTENDED FEATURES — ham moi, KHONG sua doi ham cu de co the fallback
+    # ---------------------------------------------------------------------------
+
+    def calculate_extended_features(self) -> List[pd.DataFrame]:
+        """
+        Tinh them 2 features moi (giu nguyen 7 features cu):
+            - return_20d: rolling 20-day return (trend dai han)
+            - volatility_20d: rolling 20-day realized volatility (regime detection)
+
+        Tat ca deu duoc chuan hoa bang Z-score rolling 60 nhu cac features cu.
+        Ham nay KHONG anh huong den calculate_features() — chi them cot moi.
+        """
+        for data in self.dataset:
+            # return_20d: pct_change(20) -> zscore
+            raw_return_20d = data['close'].pct_change(20)
+            data['return_20d'] = self._zscore_rolling(raw_return_20d)
+
+            # volatility_20d: rolling std cua daily returns (20 ngay) -> zscore
+            daily_returns = data['close'].pct_change(1)
+            raw_volatility_20d = daily_returns.rolling(window=20, min_periods=20).std()
+            data['volatility_20d'] = self._zscore_rolling(raw_volatility_20d)
+
+        return self.dataset
+
+    def process_extended(self) -> List[pd.DataFrame]:
+        """
+        Pipeline mo rong: clean -> features cu -> features moi -> drop na.
+        Tuong duong process() nhung them 2 features moi.
+        Giu process() nguyen ven de fallback.
+        """
+        self.clean_data()
+        self.calculate_features()
+        self.calculate_extended_features()
+        self.drop_na()
+        return self.dataset
