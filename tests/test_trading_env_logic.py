@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.environment.reward_function import AdvancedRewardFunction, SharpeRewardFunction, SharpePlusRewardFunction
+from src.environment.action_space import decode_discrete_action
 from src.environment.trading_env import TradingEnv
 
 
@@ -58,6 +59,24 @@ class DummyReward:
 
 
 class TradingEnvLogicTests(unittest.TestCase):
+    def test_decode_discrete_action_large_holdings_no_int32_overflow(self):
+        action = np.array([0], dtype=np.int64)
+        holdings = np.array([2_467_816_000], dtype=np.int64)
+        prices = np.array([10.0], dtype=np.float64)
+
+        trade_amounts = decode_discrete_action(
+            action=action,
+            n_stocks=1,
+            min_shares=100,
+            cash=0.0,
+            holdings=holdings,
+            prices=prices,
+            fee_rate=0.001,
+        )
+
+        self.assertEqual(trade_amounts.dtype, np.int64)
+        self.assertEqual(int(trade_amounts[0]), -2_467_816_000)
+
     def test_reward_receives_trade_amounts(self):
         env = TradingEnv(
             tickers=["AAA"],
@@ -243,19 +262,19 @@ class TradingEnvLogicTests(unittest.TestCase):
                 random_start=False,
             )
 
-    def test_discrete_scalar_action_is_supported(self):
+    def test_multidiscrete_action_space_is_used(self):
         env = TradingEnv(
             tickers=["AAA", "BBB"],
-            mode="discrete",
+            mode="MultiDiscrete",
             data_dict=make_data_dict(40, ("AAA", "BBB")),
             window_size=30,
             random_start=False,
         )
 
-        self.assertEqual(env.action_space.n, env.k * env.n_stocks)
+        self.assertEqual(tuple(env.action_space.nvec.tolist()), (env.k, env.k))
 
         env.reset()
-        _, _, terminated, truncated, info = env.step(5)
+        _, _, terminated, truncated, info = env.step(np.array([1, 2], dtype=np.int64))
 
         self.assertFalse(terminated)
         self.assertFalse(truncated)
@@ -263,7 +282,7 @@ class TradingEnvLogicTests(unittest.TestCase):
         self.assertEqual(info["trades"][0], 0)
         self.assertGreater(info["trades"][1], 0)
 
-    def test_discrete_legacy_vector_action_is_still_supported(self):
+    def test_mode_discrete_is_alias_of_multidiscrete(self):
         env = TradingEnv(
             tickers=["AAA", "BBB"],
             mode="discrete",
@@ -272,6 +291,7 @@ class TradingEnvLogicTests(unittest.TestCase):
             random_start=False,
         )
 
+        self.assertEqual(env.mode, "MultiDiscrete")
         env.reset()
         _, _, _, _, info = env.step(np.array([1, 2], dtype=np.int64))
 

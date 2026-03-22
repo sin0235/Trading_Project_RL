@@ -3,7 +3,8 @@ Mạng neural LSTM cho RL Trading Agent.
 
 Chứa 3 class chính:
     - LSTMFeatureExtractor: Backbone LSTM dùng chung
-    - DRQNNetwork: Dueling Q-Network (cho DQN Agent)
+    - BranchingDRQNNetwork: Branching Dueling Q-Network (cho Branching DDQ)
+    - DRQNNetwork: Alias tương thích ngược (flatten output từ Branching)
     - PPOLSTMActorCritic: Actor-Critic (cho PPO Agent)
 
 Input từ StateSpace (mode='sequential'):
@@ -149,107 +150,82 @@ class LSTMFeatureExtractor(nn.Module):
 # ============================================================
 
 
-class DRQNNetwork(nn.Module):
+class BranchingDRQNNetwork(nn.Module):
     """
-    Dueling Deep Recurrent Q-Network cho Discrete Action Space.
+    Branching Dueling DRQN cho Multi-Discrete Action Space.
 
-    Tách thành 2 nhánh thay vì một Q-head phẳng:
-        - Value stream: V(s) — giá trị trạng thái, không phụ thuộc action
-        - Advantage stream: A(s,a) — lợi thế tương đối của từng action
-        - Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
+    Mỗi stock = 1 branch riêng:
+        → mỗi branch có k actions (sell/hold/buy)
 
-    Dueling giúp agent hiểu "trạng thái này tốt hay xấu" (V) độc lập với
-    "hành động nào tốt nhất" (A). Đặc biệt hữu ích trong trading vì nhiều
-    trạng thái có giá trị tương tự bất kể hành động cụ thể.
+    Q(s,a) = V(s) + A_i(s,a_i) - mean(A_i)
 
-    Architecture:
-        market_state → LSTM → lstm_features (128)
-                                    ↓ concat portfolio (17)
-                              combined (145)
-                                    ↓
-                              Shared FC (145 → 128)
-                              ↓               ↓
-                         Value Stream    Advantage Stream
-                              ↓               ↓
-                           V(s) (1)      A(s,a) (n_actions)
-                              ↓               ↓
-                         Q(s,a) = V + A - mean(A)
+    Tổng action space không còn là k * n_stocks (flat),
+    mà là n_stocks nhánh độc lập.
     """
 
     def __init__(self, n_stocks: int, n_features: int,
                  seq_len: int = 30, hidden_size: int = 128,
                  num_layers: int = 2, dropout: float = 0.1,
                  k: int = 3):
-        """
-        Args:
-            n_stocks: Số lượng cổ phiếu (vd: 16)
-            n_features: Số features mỗi cổ phiếu (vd: 7)
-            seq_len: Độ dài chuỗi thời gian / window_size (vd: 30)
-            hidden_size: Kích thước hidden state LSTM
-            num_layers: Số lớp LSTM
-            dropout: Dropout rate
-            k: Số loại hành động mỗi cổ phiếu (3 = sell/hold/buy)
-        """
+
         super().__init__()
 
         self.n_stocks = n_stocks
         self.n_features = n_features
         self.seq_len = seq_len
         self.hidden_size = hidden_size
-        self.k = k
-        self.n_actions = k * n_stocks
+        self.k = k  # số action mỗi stock
 
-        input_size = n_stocks * n_features  # 16 * 7 = 112
-        portfolio_dim = 1 + n_stocks        # 1 + 16 = 17
-        combined_dim = hidden_size + portfolio_dim  # 128 + 17 = 145
+        input_size = n_stocks * n_features
+        portfolio_dim = 1 + n_stocks
+        combined_dim = hidden_size + portfolio_dim
 
+        # ===== LSTM =====
         self.feature_extractor = LSTMFeatureExtractor(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout,
         )
+
+        # ===== Shared =====
         self.shared_fc = nn.Sequential(
             nn.Linear(combined_dim, hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
 
-        # Nhánh giá trị: V(s)
+        # ===== Value =====
         self.value_stream = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, 1),
         )
 
-        # Nhánh lợi thế: A(s, a)
-        self.advantage_stream = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, self.n_actions),
-        )
+        # ===== Branching Advantage =====
+        self.advantage_streams = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_size // 2, k)
+            )
+            for _ in range(n_stocks)
+        ])
 
         _init_sequential(self.shared_fc, output_gain=np.sqrt(2))
         _init_sequential(self.value_stream, output_gain=1.0)
-        _init_sequential(self.advantage_stream, output_gain=0.01)
+        for adv in self.advantage_streams:
+            _init_sequential(adv, output_gain=0.01)
 
-    def forward(self, market_state: torch.Tensor,
-                portfolio_state: torch.Tensor,
-                hidden: tuple = None) -> tuple:
+    def forward(self, market_state, portfolio_state, hidden=None):
         """
-        Args:
-            market_state: (batch, seq_len, n_stocks, n_features)
-                          hoặc (batch, seq_len, n_stocks * n_features)
-            portfolio_state: (batch, portfolio_dim)
-            hidden: (h_0, c_0) hoặc None
-
         Returns:
-            q_values: (batch, n_actions)
-            new_hidden: (h_n, c_n)
+            q_values: (batch, n_stocks, k)
         """
+
         if market_state.dim() == 4:
-            batch, seq, stocks, feats = market_state.shape
-            market_state = market_state.reshape(batch, seq, stocks * feats)
+            b, t, s, f = market_state.shape
+            market_state = market_state.reshape(b, t, s * f)
 
         lstm_features, new_hidden = self.feature_extractor(
             market_state, hidden
@@ -257,49 +233,71 @@ class DRQNNetwork(nn.Module):
 
         combined = torch.cat([lstm_features, portfolio_state], dim=-1)
         shared_out = self.shared_fc(combined)
-        value = self.value_stream(shared_out)           # (batch, 1)
-        advantage = self.advantage_stream(shared_out)   # (batch, n_actions)
 
-        q_values = value + advantage - advantage.mean(dim=-1, keepdim=True)
+        # Value
+        value = self.value_stream(shared_out)  # (batch, 1)
+
+        # Advantage per branch
+        advantages = []
+        for adv_head in self.advantage_streams:
+            adv = adv_head(shared_out)  # (batch, k)
+            advantages.append(adv)
+
+        # stack → (batch, n_stocks, k)
+        advantages = torch.stack(advantages, dim=1)
+
+        # normalize advantage
+        adv_mean = advantages.mean(dim=-1, keepdim=True)
+
+        q_values = value.unsqueeze(1) + advantages - adv_mean
 
         return q_values, new_hidden
 
-    def init_hidden(self, batch_size: int,
-                    device: torch.device = None) -> tuple:
+    def init_hidden(self, batch_size, device=None):
         return self.feature_extractor.init_hidden(batch_size, device)
 
-    def select_action(self, market_state: torch.Tensor,
-                      portfolio_state: torch.Tensor,
-                      hidden: tuple, epsilon: float = 0.0) -> tuple:
+    def select_action(self, market_state, portfolio_state,
+                      hidden, epsilon=0.0):
         """
-        Chọn hành động theo epsilon-greedy.
-
-        Args:
-            market_state: (1, seq_len, input_size) — single observation
-            portfolio_state: (1, portfolio_dim)
-            hidden: (h, c)
-            epsilon: xác suất chọn ngẫu nhiên
-
         Returns:
-            action: int
-            new_hidden: (h_n, c_n)
+            actions: (n_stocks,) mỗi stock 1 action
         """
+
         if np.random.random() < epsilon:
-            action = np.random.randint(0, self.n_actions)
+            actions = np.random.randint(0, self.k, size=self.n_stocks)
+
             with torch.no_grad():
                 _, new_hidden = self.forward(
                     market_state, portfolio_state, hidden
                 )
-            return action, new_hidden
+
+            return actions, new_hidden
+
         else:
             with torch.no_grad():
                 q_values, new_hidden = self.forward(
                     market_state, portfolio_state, hidden
                 )
-                action = q_values.argmax(dim=-1).item()
-            return action, new_hidden
+
+                # (1, n_stocks, k) → (n_stocks,)
+                actions = q_values.argmax(dim=-1).squeeze(0).cpu().numpy()
+
+            return actions, new_hidden
 
 
+class DRQNNetwork(BranchingDRQNNetwork):
+    """
+    Wrapper tương thích ngược cho code/test cũ kỳ vọng Q-value dạng flatten.
+
+    Forward trả về shape (batch, n_stocks * k) thay vì (batch, n_stocks, k).
+    select_action vẫn trả về vector action theo stock như BranchingDRQNNetwork.
+    """
+
+    def forward(self, market_state, portfolio_state, hidden=None):
+        q_values, new_hidden = super().forward(market_state, portfolio_state, hidden)
+        b = q_values.shape[0]
+        return q_values.reshape(b, -1), new_hidden
+        
 # ============================================================
 #  Mạng PPO Actor-Critic
 # ============================================================

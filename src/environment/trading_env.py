@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     Gymnasium-compatible trading environment cho thi truong chung khoan Viet Nam.
     Ho tro 2 che do:
-        - "discrete": DRQN / DDQ (scalar action 0..K*N-1; xem src.agents.ddq_agent, src.training.DDQ)
+        - "MultiDiscrete": braching action space (N stocks * K decisions moi stock, K=3: sell/hold/buy)
         - "continuous": PPO (output vector [0,1]^(N+1), N stocks + 1 cash)
 
     Semantics nghien cuu:
@@ -36,7 +36,7 @@ class TradingEnv(gym.Env):
     def __init__(
         self,
         tickers: List[str],
-        mode: str = "discrete",
+        mode: str = "MultiDiscrete",
         initial_balance: float = 1_000_000_000,
         min_shares: int = 100,
         fee_rate: float = 0.0015,
@@ -61,7 +61,13 @@ class TradingEnv(gym.Env):
     ):
         super().__init__()
 
-        self.mode = mode
+        mode_key = str(mode).strip().lower()
+        if mode_key in {"discrete", "multidiscrete"}:
+            self.mode = "MultiDiscrete"
+        elif mode_key == "continuous":
+            self.mode = "continuous"
+        else:
+            raise ValueError(f"Unsupported mode={mode}. Use 'MultiDiscrete' or 'continuous'.")
         self.initial_balance = initial_balance
         self.min_shares = min_shares
         self.fee_rate = fee_rate
@@ -118,8 +124,8 @@ class TradingEnv(gym.Env):
             dtype=np.float32,
         )
 
-        if self.mode == "discrete":
-            self.action_space = spaces.Discrete(self.k * self.n_stocks)
+        if self.mode == "MultiDiscrete":
+            self.action_space = spaces.MultiDiscrete([self.k] * self.n_stocks)
         elif self.mode == "continuous":
             self.action_space = spaces.Box(
                 low=0, high=1.0,
@@ -215,7 +221,7 @@ class TradingEnv(gym.Env):
         execution_prices = self.get_trade_prices(execution_t)
 
         "-------------------------------------ACTION-------------------------------------------"
-        if self.mode == "discrete":
+        if self.mode == "MultiDiscrete":
             action = self._normalize_discrete_action(action)
             trade_amounts = decode_discrete_action(
                 action, self.n_stocks, self.min_shares, self.cash, self.holdings, execution_prices,
@@ -360,7 +366,7 @@ class TradingEnv(gym.Env):
             return normalized
 
         normalized = np.asarray(action, dtype=np.int64)
-        if normalized.shape != (self.n_stocks + 1,):
+        if normalized.shape != (self.n_stocks,):
             raise ValueError(
                 f"Discrete action shape {normalized.shape} != ({self.n_stocks},)"
             )

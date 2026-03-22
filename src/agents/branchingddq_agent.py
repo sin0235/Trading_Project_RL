@@ -1,13 +1,11 @@
 """
-DDQ (Double Deep Q-Learning) Agent với DRQN (Dueling LSTM) cho discrete trading.
+Branching DDQ (Double Deep Q-Learning) Agent với Branching DRQN cho MultiDiscrete trading.
 
 Thiết kế:
-    - ReplayBuffer: lưu (s, a, r, s', done) với market/portfolio tách cho LSTM
-    - Online + target network (Double DQN: argmax trên online, đánh giá trên target)
+    - ReplayBuffer: lưu (s, a_vec, r, s', done), trong đó a_vec có shape (n_stocks,)
+    - Online + target network (Double DQN theo từng branch)
     - Soft-update target (polyak tau) sau mỗi gradient step
-    - Epsilon-greedy qua DRQNNetwork.select_action (hidden=None, khớp PPO)
-
-Update dùng hidden=None trên từng transition để mini-batch song song, cùng triết lý PPO.
+    - Epsilon-greedy qua BranchingDRQNNetwork.select_action
 """
 
 import copy
@@ -18,7 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from src.models.lstm import DRQNNetwork
+from src.models.lstm import BranchingDRQNNetwork
 np.random.seed(42)
 torch.manual_seed(42)
 
@@ -32,11 +30,13 @@ class ReplayBuffer:
         seq_len: int,
         market_feat_dim: int,
         portfolio_dim: int,
+        n_branches: int,
     ):
         self.capacity = int(capacity)
         self.seq_len = seq_len
         self.market_feat_dim = market_feat_dim
         self.portfolio_dim = portfolio_dim
+        self.n_branches = int(n_branches)
 
         self._ptr = 0
         self.size = 0
@@ -45,7 +45,7 @@ class ReplayBuffer:
             (self.capacity, seq_len, market_feat_dim), dtype=np.float32
         )
         self.portfolio = np.zeros((self.capacity, portfolio_dim), dtype=np.float32)
-        self.actions = np.zeros((self.capacity,), dtype=np.int64)
+        self.actions = np.zeros((self.capacity, self.n_branches), dtype=np.int64)
         self.rewards = np.zeros((self.capacity,), dtype=np.float32)
         self.next_market = np.zeros(
             (self.capacity, seq_len, market_feat_dim), dtype=np.float32
@@ -57,7 +57,7 @@ class ReplayBuffer:
         self,
         market_state: np.ndarray,
         portfolio_state: np.ndarray,
-        action: int,
+        action: np.ndarray,
         reward: float,
         next_market_state: np.ndarray,
         next_portfolio_state: np.ndarray,
@@ -66,7 +66,12 @@ class ReplayBuffer:
         i = self._ptr
         self.market[i] = market_state
         self.portfolio[i] = portfolio_state
-        self.actions[i] = int(action)
+        action_arr = np.asarray(action, dtype=np.int64).reshape(-1)
+        if action_arr.shape != (self.n_branches,):
+            raise ValueError(
+                f"Action shape {action_arr.shape} != ({self.n_branches},)"
+            )
+        self.actions[i] = action_arr
         self.rewards[i] = float(reward)
         self.next_market[i] = next_market_state
         self.next_portfolio[i] = next_portfolio_state
@@ -100,7 +105,7 @@ class ReplayBuffer:
 class DDQAgent:
     def __init__(
         self,
-        model: DRQNNetwork,
+        model: BranchingDRQNNetwork,
         lr: float = 1e-4,
         gamma: float = 0.99,
         tau: float = 0.005,
@@ -141,6 +146,7 @@ class DDQAgent:
             seq_len=seq_len,
             market_feat_dim=market_feat_dim,
             portfolio_dim=portfolio_dim,
+            n_branches=model.n_stocks,
         )
 
         self.total_steps = 0
@@ -156,13 +162,13 @@ class DDQAgent:
         market_state: np.ndarray,
         portfolio_state: np.ndarray,
         epsilon: float,
-    ) -> int:
+    ) -> np.ndarray:
         self.model.eval()
         ms = torch.tensor(market_state, dtype=torch.float32, device=self.device).unsqueeze(0)
         ps = torch.tensor(portfolio_state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             action, _ = self.model.select_action(ms, ps, hidden=None, epsilon=float(epsilon))
-        return int(action)
+        return np.asarray(action, dtype=np.int64)
 
     # ------------------------------------------------------------------
     # Learning
@@ -172,7 +178,7 @@ class DDQAgent:
         self,
         market_state: np.ndarray,
         portfolio_state: np.ndarray,
-        action: int,
+        action: np.ndarray,
         reward: float,
         next_market_state: np.ndarray,
         next_portfolio_state: np.ndarray,
@@ -219,14 +225,14 @@ class DDQAgent:
         dones = batch["dones"]
 
         with torch.no_grad():
-            next_q_online, _ = self.model(next_ms, next_ps, hidden=None)
-            next_actions = next_q_online.argmax(dim=-1, keepdim=True)
+            next_q_online, _ = self.model(next_ms, next_ps, hidden=None)  # (B, N, K)
+            next_actions = next_q_online.argmax(dim=-1, keepdim=True)  # (B, N, 1)
             next_q_target, _ = self.target_model(next_ms, next_ps, hidden=None)
-            next_q = next_q_target.gather(1, next_actions).squeeze(-1)
-            target = rewards + self.gamma * (1.0 - dones) * next_q
+            next_q = next_q_target.gather(-1, next_actions).squeeze(-1)  # (B, N)
+            target = rewards.unsqueeze(1) + self.gamma * (1.0 - dones.unsqueeze(1)) * next_q
 
         current_q, _ = self.model(ms, ps, hidden=None)
-        current_q = current_q.gather(1, actions.unsqueeze(1)).squeeze(-1)
+        current_q = current_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # (B, N)
 
         loss = nn.functional.smooth_l1_loss(current_q, target)
 
