@@ -20,7 +20,7 @@ class TradingEnv(gym.Env):
     """
     Gymnasium-compatible trading environment cho thi truong chung khoan Viet Nam.
     Ho tro 2 che do:
-        - "discrete": DRQN/DQN (ho tro scalar action 0..K*N-1 va legacy per-stock vector)
+        - "discrete": DRQN / DDQ (scalar action 0..K*N-1; xem src.agents.ddq_agent, src.training.DDQ)
         - "continuous": PPO (output vector [0,1]^(N+1), N stocks + 1 cash)
 
     Semantics nghien cuu:
@@ -360,7 +360,7 @@ class TradingEnv(gym.Env):
             return normalized
 
         normalized = np.asarray(action, dtype=np.int64)
-        if normalized.shape != (self.n_stocks,):
+        if normalized.shape != (self.n_stocks + 1,):
             raise ValueError(
                 f"Discrete action shape {normalized.shape} != ({self.n_stocks},)"
             )
