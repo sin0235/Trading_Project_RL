@@ -44,8 +44,10 @@ class AdvancedRewardFunction:
 
         # 2. Thành phần Rủi ro (Volatility Penalty)
         vol_penalty = 0.0
-        if len(self.returns_history) >= 2:
-            vol_penalty = float(np.std(self.returns_history))
+        # if len(self.returns_history) >= 2:
+            # vol_penalty = float(np.std(self.returns_history))
+        downside_returns = [r for r in self.returns_history if r < 0]
+        vol_penalty = float(np.std(downside_returns)) if len(downside_returns) > 2 else 0.0
 
         # 3. Thành phần Sụt giảm (Drawdown Penalty)
         self.max_portfolio_value = max(self.max_portfolio_value, v_new)
@@ -57,7 +59,9 @@ class AdvancedRewardFunction:
         turnover_penalty = 0.0
         if trade_amounts is not None:
             # Tính tổng số cổ phiếu được giao dịch
-            turnover_penalty = float(np.sum(np.abs(trade_amounts))) / 1000
+            # turnover_penalty = float(np.sum(np.abs(trade_amounts))) / 1000
+            turnover_ratio = np.sum(np.abs(trade_amounts)) / v_new
+            turnover_penalty = float(turnover_ratio)
 
         """ trade_amounts ví dụ như là 2000 | chỉ số log return thường thì nằm trong khoảng từ -0.05 đến 0.05 (mức biến động |5%|), turn_over_penalty"""
 
