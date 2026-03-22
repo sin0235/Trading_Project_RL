@@ -1,0 +1,40 @@
+Zeppelin Self-contained Notebook
+
+Muc tieu:
+- Khong can upload helper `.py` len Zeppelin.
+- Van doc duoc `results/runs` va `data/processed`.
+- Co them live market snapshot de tang tinh demo thuc te.
+
+File tao ra:
+- `notebooks/project_RL_nhom9_self_contained.zpln`
+
+Cach generate lai:
+
+  python scripts/build_zeppelin_self_contained_notebook.py
+
+Neu muon ghi de len file notebook cu:
+
+  python scripts/build_zeppelin_self_contained_notebook.py --name project_RL_nhom9 --output notebooks/project_RL_nhom9.zpln
+
+Cach dung trong Zeppelin:
+
+1. Import file `.zpln` moi vao Zeppelin.
+2. Chay paragraph `Setup & Bind Data`.
+3. Kiem tra cac form:
+   - `project_root`
+   - `results_dir`
+   - `data_dir`
+   - `live_tickers`
+   - `enable_live_quotes`
+4. Xem `training_overview_demo` bang Spark SQL neu can.
+5. Mo paragraph Angular de demo giao dien.
+
+Giai phap cho van de khong upload duoc `.py`:
+- Toan bo helper logic nam trong paragraph `%spark.pyspark`.
+- Zeppelin khong can `import scripts.*` tu file ben ngoai.
+- Van bind Angular payload va tao temp view Spark nhu binh thuong.
+
+Live market:
+- Notebook thu lay quote tu Yahoo Finance chart API.
+- Neu khong lay duoc qua mang, dashboard fallback ve close cuoi trong `data/processed`.
+- Trang thai se hien `LIVE` hoac `HISTORICAL_ONLY`.
