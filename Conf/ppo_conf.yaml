@@ -63,7 +63,7 @@ vf_coef: 0.5
 max_grad_norm: 0.5
 target_kl: 0.02
 
-total_timesteps: 250000
+total_timesteps: 500000
 lr_schedule: cosine
 min_learning_rate: 0.00003
 eval_freq: 5
