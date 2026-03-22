@@ -1,3 +1,4 @@
+
 __pycache__/
 */__pycache__/
 *.pyc
@@ -35,3 +36,5 @@ __pycache__/
 
 *.csv
 *.log
+results/runs/*
+*.pt:Zone.Identifier
