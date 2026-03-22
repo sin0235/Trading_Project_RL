@@ -42,7 +42,7 @@ max_steps_eval: 9999
 reward_scaling: 1.0
 reward_name: sharpe
 reward_window: 30
-trade_deadband: 0.03
+trade_deadband: 0.04
 max_weight_change_per_step: 0.07
 
 hidden_size: 128
@@ -58,17 +58,17 @@ n_epochs: 10
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
-ent_coef: 0.01
+ent_coef: 0.005
 vf_coef: 0.5
 max_grad_norm: 0.5
 target_kl: 0.02
 
 total_timesteps: 500000
 lr_schedule: cosine
-min_learning_rate: 0.0001
+min_learning_rate: 0.00003
 eval_freq: 5
 save_freq: 5
-n_eval_episodes: 1
+n_eval_episodes: 3
 
 seed: 42
 device: auto
