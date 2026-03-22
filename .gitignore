@@ -38,3 +38,4 @@ __pycache__/
 *.log
 results/runs/*
 *.pt:Zone.Identifier
+*:Zone.Identifier
