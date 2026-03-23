@@ -56,22 +56,22 @@ dropout: 0.1
 log_std_init: -0.5
 dirichlet_total_concentration: 128.0
 
-learning_rate: 0.0002
+learning_rate: 0.0003
 n_steps: 2048
-batch_size: 256
-n_epochs: 10
+batch_size: 128
+n_epochs: 15
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.2
+clip_range: 0.25
 ent_coef: 0.0
 vf_coef: 0.5
 max_grad_norm: 0.5
-target_kl: 0.025
+target_kl: 0.04
 
 total_timesteps: 600000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.00002
+min_learning_rate: 0.00003
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:
