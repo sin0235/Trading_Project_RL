@@ -273,25 +273,73 @@ def compute_rollout_steps_to_next_milestone(
     n_steps: int,
     milestone_steps: list[int],
     saved_steps: set[int] | None = None,
+    periodic_frequencies: Iterable[int] | None = None,
 ) -> int:
     remaining_steps = int(total_timesteps) - int(current_step)
     if remaining_steps <= 0:
         return 0
 
     rollout_steps = min(int(n_steps), remaining_steps)
+    stop_candidates: list[int] = []
+
     milestone = next_checkpoint_milestone(
         current_step=int(current_step),
         milestone_steps=milestone_steps,
         saved_steps=saved_steps,
     )
-    if milestone is None:
+    if milestone is not None:
+        stop_candidates.append(int(milestone))
+
+    for frequency in periodic_frequencies or ():
+        boundary = next_periodic_trigger_step(
+            current_step=int(current_step),
+            frequency=int(frequency),
+            n_steps=int(n_steps),
+            total_timesteps=int(total_timesteps),
+        )
+        if boundary is not None:
+            stop_candidates.append(boundary)
+
+    if not stop_candidates:
         return rollout_steps
 
-    steps_until_milestone = int(milestone) - int(current_step)
-    if steps_until_milestone <= 0:
+    next_stop_step = min(stop_candidates)
+    steps_until_stop = int(next_stop_step) - int(current_step)
+    if steps_until_stop <= 0:
         return rollout_steps
 
-    return min(rollout_steps, steps_until_milestone)
+    return min(rollout_steps, steps_until_stop)
+
+
+def compute_periodic_trigger_interval(frequency: int, n_steps: int) -> int:
+    frequency = int(frequency)
+    n_steps = int(n_steps)
+
+    if frequency <= 0:
+        raise ValueError("Periodic frequency phải > 0.")
+    if n_steps <= 0:
+        raise ValueError("n_steps phải > 0.")
+
+    return frequency * n_steps
+
+
+def next_periodic_trigger_step(
+    current_step: int,
+    frequency: int,
+    n_steps: int,
+    total_timesteps: int | None = None,
+) -> int | None:
+    interval = compute_periodic_trigger_interval(frequency=frequency, n_steps=n_steps)
+    next_step = ((int(current_step) // interval) + 1) * interval
+    if total_timesteps is not None and next_step > int(total_timesteps):
+        return None
+    return next_step
+
+
+def is_periodic_trigger_step(step: int, frequency: int, n_steps: int) -> bool:
+    interval = compute_periodic_trigger_interval(frequency=frequency, n_steps=n_steps)
+    step = int(step)
+    return step > 0 and step % interval == 0
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -786,6 +834,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             n_steps=cfg["n_steps"],
             milestone_steps=cfg["milestone_checkpoint_steps"],
             saved_steps=saved_checkpoint_steps,
+            periodic_frequencies=(cfg["eval_freq"], cfg["save_freq"]),
         )
         if rollout_steps <= 0:
             break
@@ -849,7 +898,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             )
 
         # Periodic eval on val set
-        if rollout % cfg["eval_freq"] == 0:
+        if is_periodic_trigger_step(agent.total_steps, cfg["eval_freq"], cfg["n_steps"]):
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
             val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
             avg_val_metrics = average_metrics(val_metrics_list)
@@ -872,7 +921,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             save_step_checkpoint(agent.total_steps, "milestone_checkpoint")
 
         # Periodic checkpoint
-        if rollout % cfg["save_freq"] == 0:
+        if is_periodic_trigger_step(agent.total_steps, cfg["save_freq"], cfg["n_steps"]):
             save_step_checkpoint(agent.total_steps, "periodic_checkpoint")
 
     # ----------------------------------------------------------------

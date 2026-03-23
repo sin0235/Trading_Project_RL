@@ -8,11 +8,14 @@ from src.models.lstm import PPOLSTMActorCritic
 from src.training.PPO import (
     DEFAULT_CONFIG,
     compute_rollout_steps_to_next_milestone,
+    compute_periodic_trigger_interval,
     compute_learning_rate,
     get_results_root_candidates,
     infer_run_config_from_checkpoint,
+    is_periodic_trigger_step,
     load_ppo_config,
     normalize_checkpoint_milestones,
+    next_periodic_trigger_step,
     next_checkpoint_milestone,
     resolve_eval_run_across_roots,
     resolve_eval_run,
@@ -147,6 +150,41 @@ class PPOConfigLogicTests(unittest.TestCase):
             ),
             1_952,
         )
+
+    def test_periodic_checkpoint_boundaries_remain_aligned_after_early_milestone(self):
+        current_step = 0
+        saved_steps = set()
+        milestone_steps = [100]
+        observed_boundaries = []
+
+        for _ in range(6):
+            rollout_steps = compute_rollout_steps_to_next_milestone(
+                current_step=current_step,
+                total_timesteps=500_000,
+                n_steps=2_048,
+                milestone_steps=milestone_steps,
+                saved_steps=saved_steps,
+                periodic_frequencies=[5],
+            )
+            current_step += rollout_steps
+            if current_step in milestone_steps:
+                saved_steps.add(current_step)
+                observed_boundaries.append(current_step)
+            if is_periodic_trigger_step(current_step, frequency=5, n_steps=2_048):
+                observed_boundaries.append(current_step)
+
+        self.assertEqual(current_step, 10_240)
+        self.assertEqual(observed_boundaries, [100, 10_240])
+        self.assertEqual(
+            next_periodic_trigger_step(
+                current_step=100,
+                frequency=5,
+                n_steps=2_048,
+                total_timesteps=500_000,
+            ),
+            10_240,
+        )
+        self.assertEqual(compute_periodic_trigger_interval(5, 2_048), 10_240)
 
     def test_resolve_eval_checkpoint_prefers_best_then_final_then_latest_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:
