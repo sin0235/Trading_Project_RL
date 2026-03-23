@@ -257,7 +257,6 @@ class TradingEnv(gym.Env):
                 trade_deadband=self.trade_deadband,
                 max_weight_change_per_step=self.max_weight_change_per_step,
             )
-
         trade_amounts = apply_constraints(
             trade_amounts, self.cash, self.holdings, execution_prices, self.fee_rate, self.min_shares
         )
@@ -405,7 +404,7 @@ class TradingEnv(gym.Env):
                 )
             )
         except TypeError:
-            return float(self.reward_fn.calculate(v_old, v_new, trade_amounts))
+            return float(self.reward_fn.calculate(v_old, v_new, trade_amounts, execution_prices=execution_prices))
 
     def _build_info(self, prices, trades=None, fees=0.0, execution_prices=None):
         if execution_prices is None:
