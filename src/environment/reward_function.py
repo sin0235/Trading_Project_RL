@@ -14,19 +14,21 @@ class AdvancedRewardFunction:
         window: int = 30,
         alpha: float = 0.1,  # Trọng số cho Volatility (Rủi ro)
         beta: float = 0.5,   # Trọng số cho Max Drawdown (Sụt giảm)
-        gamma: float = 0.01  # Trọng số cho Transaction Penalty (Chi phí)
+        gamma: float = 0.01,  # Trọng số cho Transaction Penalty (Chi phí)
+        initial_balance = None 
     ):
         self.window = window
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.initial_balance = initial_balance
         
         self.returns_history = deque(maxlen=window)
-        self.max_portfolio_value = -np.inf
+        self.max_portfolio_value = self.initial_balance if self.initial_balance is not None else -np.inf
 
     def reset(self):
         self.returns_history.clear()
-        self.max_portfolio_value = -np.inf
+        self.max_portfolio_value = self.initial_balance if self.initial_balance is not None else -np.inf
 
     def calculate(self, v_old: float, v_new: float, trade_amounts: np.ndarray = None) -> float:
         """
@@ -46,8 +48,7 @@ class AdvancedRewardFunction:
         vol_penalty = 0.0
         # if len(self.returns_history) >= 2:
             # vol_penalty = float(np.std(self.returns_history))
-        downside_returns = [r for r in self.returns_history if r < 0]
-        vol_penalty = float(np.std(downside_returns)) if len(downside_returns) > 2 else 0.0
+        vol_penalty = float(np.std(self.returns_history)) if len(self.returns_history) > 2 else 0.0
 
         # 3. Thành phần Sụt giảm (Drawdown Penalty)
         self.max_portfolio_value = max(self.max_portfolio_value, v_new)
