@@ -15,9 +15,11 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -555,6 +557,79 @@ def make_env(tickers, data_dict, config, for_eval=False):
     )
 
 
+def collect_account_history(
+    agent: BranchingDDQAgent,
+    env: TradingEnv,
+    state_space,
+    n_episodes: int,
+    deterministic: bool = True,
+) -> pd.DataFrame:
+    records = []
+    effective = int(n_episodes)
+    if deterministic and not getattr(env, "random_start", True):
+        effective = 1
+
+    eps = 0.0 if deterministic else 0.05
+    agent.model.eval()
+
+    with torch.no_grad():
+        for ep in range(1, effective + 1):
+            obs, info = env.reset()
+            done = False
+            step_idx = 0
+
+            while True:
+                holdings = np.asarray(info["holdings"], dtype=np.int64)
+                row = {
+                    "episode": ep,
+                    "step": step_idx,
+                    "date": str(info["date"]),
+                    "cash": float(info["cash"]),
+                    "total_shares": int(np.sum(holdings)),
+                    "total_asset": float(info["portfolio_value"]),
+                }
+                for ticker, qty in zip(env.state_space.tickers, holdings):
+                    row[f"holding_{ticker}"] = int(qty)
+                records.append(row)
+
+                if done:
+                    break
+
+                ms, ps = state_space.flat_obs_to_sequential(obs)
+                action = agent.select_action(ms, ps, epsilon=eps)
+                obs, _reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+                step_idx += 1
+
+    account_df = pd.DataFrame(records)
+    if account_df.empty:
+        return account_df
+
+    account_df["growth_pct_vs_prev"] = (
+        account_df.groupby("episode")["total_asset"].pct_change().fillna(0.0) * 100.0
+    )
+    return account_df
+
+
+def save_account_history_csv(
+    account_df: pd.DataFrame,
+    ckpt_path: Path,
+    run_dir: str | os.PathLike | None = None,
+) -> Path:
+    if run_dir is not None:
+        output_dir = Path(run_dir) / "eval"
+    elif ckpt_path.parent.name == "checkpoints":
+        output_dir = ckpt_path.parent.parent / "eval"
+    else:
+        output_dir = ckpt_path.parent / "eval"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = output_dir / f"account_history_{timestamp}.csv"
+    account_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    return output_path
+
+
 def train_branchingddq(config: dict | None = None, config_path: str | os.PathLike | None = None):
     cfg = resolve_ddq_config(config=config, config_path=config_path)
     set_seed(cfg["seed"])
@@ -766,8 +841,11 @@ def evaluate_branchingddq(
     config_source = "runtime_config"
     ckpt_source = "manual"
 
+    selected_run_dir: Path | None = None
+
     if run_dir is not None:
         run_path = Path(run_dir)
+        selected_run_dir = run_path
         eval_cfg = load_run_config(run_path, overrides=overrides)
         config_source = "run_config"
 
@@ -798,6 +876,7 @@ def evaluate_branchingddq(
             )
 
         ckpt_path = resolved["ckpt_path"]
+        selected_run_dir = resolved["run_dir"]
         ckpt_source = resolved["ckpt_source"]
         eval_cfg = resolved["config"]
         config_source = resolved["config_source"]
@@ -807,7 +886,7 @@ def evaluate_branchingddq(
 
     set_seed(eval_cfg["seed"])
 
-    data_dict = load_data(tickers=eval_cfg["tickers"], data_path=eval_cfg["data_path"])
+    data_dict = load_data(tickers=eval_cfg["tickers"], data_path=DATA_PATH)
     split = split_by_ratio(
         data_dict,
         train_ratio=eval_cfg["train_ratio"],
@@ -850,6 +929,14 @@ def evaluate_branchingddq(
         report_every=eval_cfg["eval_account_report_every"],
         top_k_holdings=eval_cfg["eval_account_report_top_k"],
     )
+    account_df = collect_account_history(
+        agent,
+        test_env,
+        test_env.state_space,
+        n_episodes=eval_cfg["n_eval_episodes"],
+        deterministic=True,
+    )
+    account_csv_path = save_account_history_csv(account_df, ckpt_path=Path(ckpt_path), run_dir=selected_run_dir)
     test_metrics_list = [compute_all(pv, eval_cfg["initial_balance"]) for pv in test_values]
     avg_test = average_metrics(test_metrics_list)
     test_baselines = evaluate_baselines(test_env, eval_cfg["initial_balance"])
@@ -861,6 +948,7 @@ def evaluate_branchingddq(
         print(f"run_dir: {resolved['run_dir']}")
         print(f"results_root: {resolved.get('results_root')}")
     print(f"episodes: {eval_cfg['n_eval_episodes']}")
+    print(f"account_csv: {account_csv_path}")
     print(f"\n{format_report(avg_test)}")
     for name, metrics in test_baselines.items():
         print(format_baseline_comparison(name.upper(), avg_test, metrics))
@@ -869,6 +957,7 @@ def evaluate_branchingddq(
         "checkpoint_path": str(ckpt_path),
         "checkpoint_source": ckpt_source,
         "config_source": config_source,
+        "account_csv": str(account_csv_path),
         "metrics": avg_test,
         "baseline_comparisons": {
             name: build_baseline_comparison(avg_test, metrics)
