@@ -22,6 +22,7 @@ from src.training.DDQ import (
 )
 from src.training.PPO import (
     DEFAULT_CONFIG,
+    build_reward_kwargs_from_config,
     infer_run_config_from_checkpoint,
     load_run_config,
 )
@@ -1021,7 +1022,7 @@ def _make_eval_env(
         random_start=False,
         reward_scaling=float(config["reward_scaling"]),
         reward_name=str(config["reward_name"]),
-        reward_kwargs={"window": int(config.get("reward_window", 30))},
+        reward_kwargs=build_reward_kwargs_from_config(config),
         trade_deadband=float(trade_deadband if trade_deadband is not None else config["trade_deadband"]),
         max_weight_change_per_step=float(
             max_weight_change_per_step
@@ -1049,7 +1050,7 @@ def _make_eval_env_discrete(
         random_start=False,
         reward_scaling=float(config["reward_scaling"]),
         reward_name=str(config["reward_name"]),
-        reward_kwargs={"window": int(config.get("reward_window", 30))},
+        reward_kwargs=build_reward_kwargs_from_config(config),
         trade_deadband=float(config.get("trade_deadband", 0.0)),
         max_weight_change_per_step=float(config.get("max_weight_change_per_step", 1.0)),
         print_verbosity=999999,

@@ -51,6 +51,17 @@ DEFAULT_CONFIG = {
     "reward_scaling": 1.0,
     "reward_name": "sharpe",
     "reward_window": 30,
+    "reward_sharpe_scale": 1.0,
+    "reward_excess_scale": 80.0,
+    "reward_drawdown_scale": 2.0,
+    "reward_turnover_scale": 0.2,
+    "reward_holding_scale": 0.1,
+    "reward_momentum_scale": 0.3,
+    "reward_dd_threshold": 0.05,
+    "reward_dd_escalation": 3.0,
+    "reward_advanced_alpha": 0.1,
+    "reward_advanced_beta": 0.5,
+    "reward_advanced_gamma": 0.01,
     "trade_deadband": 0.01,
     "max_weight_change_per_step": 0.15,
 
@@ -168,6 +179,23 @@ def resolve_ppo_config(config: dict | None = None,
         raise ValueError("min_learning_rate phải > 0.")
     if resolved["min_learning_rate"] > resolved["learning_rate"]:
         raise ValueError("min_learning_rate không được lớn hơn learning_rate.")
+    if resolved["reward_window"] <= 0:
+        raise ValueError("reward_window phải > 0.")
+    for key in (
+        "reward_sharpe_scale",
+        "reward_excess_scale",
+        "reward_drawdown_scale",
+        "reward_turnover_scale",
+        "reward_holding_scale",
+        "reward_momentum_scale",
+        "reward_dd_threshold",
+        "reward_dd_escalation",
+        "reward_advanced_alpha",
+        "reward_advanced_beta",
+        "reward_advanced_gamma",
+    ):
+        if resolved[key] < 0:
+            raise ValueError(f"{key} phải >= 0.")
     if resolved["trade_deadband"] < 0:
         raise ValueError("trade_deadband phải >= 0.")
     if not (0 < resolved["max_weight_change_per_step"] <= 1.0):
@@ -256,6 +284,44 @@ def normalize_checkpoint_milestones(
         normalized.append(step)
 
     return sorted(set(normalized))
+
+
+def build_reward_kwargs_from_config(config: dict) -> dict:
+    reward_name = str(config.get("reward_name", "sharpe")).strip().lower()
+    reward_kwargs = {"window": int(config.get("reward_window", 30))}
+
+    if reward_name in {"sharpe", "sharpe_reward", "sharpereward"}:
+        reward_kwargs.update(
+            {
+                "sharpe_scale": float(config.get("reward_sharpe_scale", 1.0)),
+                "excess_scale": float(config.get("reward_excess_scale", 80.0)),
+                "drawdown_scale": float(config.get("reward_drawdown_scale", 2.0)),
+                "turnover_scale": float(config.get("reward_turnover_scale", 0.2)),
+            }
+        )
+    elif reward_name in {"sharpe_plus", "sharpeplus", "sharpe_plus_reward"}:
+        reward_kwargs.update(
+            {
+                "sharpe_scale": float(config.get("reward_sharpe_scale", 1.0)),
+                "excess_scale": float(config.get("reward_excess_scale", 80.0)),
+                "holding_scale": float(config.get("reward_holding_scale", 0.1)),
+                "momentum_scale": float(config.get("reward_momentum_scale", 0.3)),
+                "drawdown_scale": float(config.get("reward_drawdown_scale", 3.0)),
+                "turnover_scale": float(config.get("reward_turnover_scale", 0.3)),
+                "dd_threshold": float(config.get("reward_dd_threshold", 0.05)),
+                "dd_escalation": float(config.get("reward_dd_escalation", 3.0)),
+            }
+        )
+    elif reward_name in {"advanced", "legacy", "advanced_reward"}:
+        reward_kwargs.update(
+            {
+                "alpha": float(config.get("reward_advanced_alpha", 0.1)),
+                "beta": float(config.get("reward_advanced_beta", 0.5)),
+                "gamma": float(config.get("reward_advanced_gamma", 0.01)),
+            }
+        )
+
+    return reward_kwargs
 
 
 def next_checkpoint_milestone(
@@ -628,7 +694,7 @@ def make_env(tickers, data_dict, config, for_eval=False):
         random_start=not for_eval,
         reward_scaling=config["reward_scaling"],
         reward_name=config["reward_name"],
-        reward_kwargs={"window": config["reward_window"]},
+        reward_kwargs=build_reward_kwargs_from_config(config),
         trade_deadband=config["trade_deadband"],
         max_weight_change_per_step=config["max_weight_change_per_step"],
         print_verbosity=999999,
@@ -794,7 +860,11 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     logger.info(f"Device: {agent.device} | Params: {total_params:,}")
     logger.info(
         f"Reward function: {cfg['reward_name']} | "
-        f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']}"
+        f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']} | "
+        f"sharpe_scale={cfg['reward_sharpe_scale']:.2f} | "
+        f"excess_scale={cfg['reward_excess_scale']:.2f} | "
+        f"drawdown_scale={cfg['reward_drawdown_scale']:.2f} | "
+        f"turnover_scale={cfg['reward_turnover_scale']:.2f}"
     )
     logger.info(
         f"Execution filters: trade_deadband={cfg['trade_deadband']:.3f} | "

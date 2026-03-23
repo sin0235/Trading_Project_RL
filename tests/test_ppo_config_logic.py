@@ -7,6 +7,7 @@ from pathlib import Path
 from src.models.lstm import PPOLSTMActorCritic
 from src.training.PPO import (
     DEFAULT_CONFIG,
+    build_reward_kwargs_from_config,
     compute_rollout_steps_to_next_milestone,
     compute_periodic_trigger_interval,
     compute_learning_rate,
@@ -36,6 +37,8 @@ class PPOConfigLogicTests(unittest.TestCase):
                     total_timesteps: 12345
                     n_eval_episodes: 1
                     reward_name: tmp
+                    reward_excess_scale: 40.0
+                    reward_turnover_scale: 0.5
                     lr_schedule: linear
                     min_learning_rate: 0.00002
                     trade_deadband: 0.03
@@ -51,6 +54,8 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(cfg["total_timesteps"], 12345)
             self.assertEqual(cfg["n_eval_episodes"], 1)
             self.assertEqual(cfg["reward_name"], "tmp")
+            self.assertEqual(cfg["reward_excess_scale"], 40.0)
+            self.assertEqual(cfg["reward_turnover_scale"], 0.5)
             self.assertEqual(cfg["lr_schedule"], "linear")
             self.assertEqual(cfg["min_learning_rate"], 0.00002)
             self.assertEqual(cfg["trade_deadband"], 0.03)
@@ -105,12 +110,39 @@ class PPOConfigLogicTests(unittest.TestCase):
         self.assertAlmostEqual(compute_learning_rate(1e-4, 2e-5, 0.75, "constant"), 1e-4)
 
     def test_resolve_ppo_config_validates_execution_filters(self):
+        with self.assertRaisesRegex(ValueError, "reward_excess_scale"):
+            resolve_ppo_config(config={"reward_excess_scale": -1.0})
         with self.assertRaisesRegex(ValueError, "trade_deadband"):
             resolve_ppo_config(config={"trade_deadband": -0.01})
         with self.assertRaisesRegex(ValueError, "max_weight_change_per_step"):
             resolve_ppo_config(config={"max_weight_change_per_step": 0.0})
         with self.assertRaisesRegex(ValueError, "dirichlet_total_concentration"):
             resolve_ppo_config(config={"dirichlet_total_concentration": -1.0})
+
+    def test_build_reward_kwargs_from_config_uses_sharpe_scales(self):
+        cfg = resolve_ppo_config(
+            config={
+                "reward_name": "sharpe",
+                "reward_window": 45,
+                "reward_sharpe_scale": 1.5,
+                "reward_excess_scale": 35.0,
+                "reward_drawdown_scale": 2.5,
+                "reward_turnover_scale": 0.75,
+            }
+        )
+
+        reward_kwargs = build_reward_kwargs_from_config(cfg)
+
+        self.assertEqual(
+            reward_kwargs,
+            {
+                "window": 45,
+                "sharpe_scale": 1.5,
+                "excess_scale": 35.0,
+                "drawdown_scale": 2.5,
+                "turnover_scale": 0.75,
+            },
+        )
 
     def test_resolve_ppo_config_normalizes_milestone_checkpoint_steps(self):
         cfg = resolve_ppo_config(
