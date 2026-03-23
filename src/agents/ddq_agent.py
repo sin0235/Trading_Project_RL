@@ -19,6 +19,8 @@ import torch
 import torch.nn as nn
 
 from src.models.lstm import DRQNNetwork
+np.random.seed(42)
+torch.manual_seed(42)
 
 
 class ReplayBuffer:

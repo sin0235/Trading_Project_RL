@@ -85,7 +85,8 @@ def decode_discrete_action(action, n_stocks, min_shares, cash, holdings, prices,
     """
     Action 0: Sell all, 1: Hold, 2: Buy
     """
-    trade_amounts = np.zeros(n_stocks, dtype=np.int32)
+    # Dùng int64 để tránh tràn số khi holdings rất lớn (train dài, giá thấp).
+    trade_amounts = np.zeros(n_stocks, dtype=np.int64)
     
     # 1. Xử lý lệnh BÁN trước để giải phóng tiền
     for i in range(n_stocks):
@@ -130,7 +131,7 @@ def decode_continuous_action(
     """
     NAV = cash + np.sum(holdings * prices)
     if NAV <= 0:
-        return np.zeros_like(holdings, dtype=np.int32)
+        return np.zeros_like(holdings, dtype=np.int64)
 
     # Tỷ trọng mục tiêu của các mã (bỏ phần tử cuối là cash)
     target_ratios = np.asarray(action[:-1], dtype=np.float64)
@@ -150,7 +151,7 @@ def decode_continuous_action(
     # Lượng tiền cần dịch chuyển cho mỗi mã.
     # Dương là mua thêm, âm là bán bớt.
     trade_amounts = (diff_ratio * NAV) / prices
-    return trade_amounts.astype(np.int32)
+    return trade_amounts.astype(np.int64)
 
 def apply_constraints(trade_amounts: np.ndarray, cash: float, 
                       holdings: np.ndarray, prices: np.ndarray, 
@@ -158,7 +159,7 @@ def apply_constraints(trade_amounts: np.ndarray, cash: float,
     """
     Ràng buộc lô 100 và không âm tiền/cổ phiếu
     """
-    adjusted_trade = trade_amounts.copy()
+    adjusted_trade = np.asarray(trade_amounts, dtype=np.int64).copy()
     
     # 1. Ràng buộc BÁN: Không bán quá số lượng đang có và phải chia hết cho lô 100
     for i in range(len(adjusted_trade)):
@@ -188,4 +189,4 @@ def apply_constraints(trade_amounts: np.ndarray, cash: float,
             for i in buy_indices:
                 adjusted_trade[i] = int(adjusted_trade[i] // min_shares) * min_shares
 
-    return adjusted_trade.astype(np.int32)
+    return adjusted_trade.astype(np.int64)
