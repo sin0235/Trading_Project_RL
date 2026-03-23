@@ -1,2 +1,2 @@
 from .ppo_agent import PPOAgent, RolloutBuffer
-from .branchingddq_agent import DDQAgent, ReplayBuffer
+from .branchingddq_agent import BranchingDDQAgent, ReplayBuffer

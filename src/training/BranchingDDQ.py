@@ -4,7 +4,7 @@ Training script cho Branching Double DQN (DDQ) + Branching DRQN (LSTM) tren Trad
 Luồng chính:
     1. Load data, chia train/val/test
     2. Tao env mode=MultiDiscrete
-    3. Tao BranchingDRQNNetwork + DDQAgent (online/target)
+    3. Tao BranchingDRQNNetwork + BranchingDDQAgent (online/target)
     4. Vòng env: epsilon-greedy -> replay -> TD update (Double DQN) -> eval/checkpoint
 
 Chạy:
@@ -22,7 +22,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.agents.branchingddq_agent import DDQAgent
+from src.agents.branchingddq_agent import BranchingDDQAgent
 from src.constants import DATA_PATH, FEATURES, TICKERS, WINDOW_SIZE
 from src.environment.trading_env import TradingEnv
 from src.models.lstm import BranchingDRQNNetwork
@@ -82,6 +82,9 @@ DEFAULT_CONFIG = {
     "eval_freq": 10_000,
     "save_freq": 20_000,
     "n_eval_episodes": 1,
+    "eval_account_report": True,
+    "eval_account_report_every": 1,
+    "eval_account_report_top_k": 0,
 
     "seed": 42,
     "device": "auto",
@@ -462,6 +465,8 @@ def resolve_ddq_config(
         "eval_freq",
         "save_freq",
         "n_eval_episodes",
+        "eval_account_report_every",
+        "eval_account_report_top_k",
         "seed",
     ]
 
@@ -476,6 +481,28 @@ def resolve_ddq_config(
             resolved[key] = int(resolved[key])
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Config key '{key}' phải là số nguyên hợp lệ, nhận được: {resolved[key]!r}") from exc
+
+    eval_report_raw = resolved.get("eval_account_report", False)
+    if isinstance(eval_report_raw, bool):
+        resolved["eval_account_report"] = eval_report_raw
+    elif isinstance(eval_report_raw, (int, float)):
+        resolved["eval_account_report"] = bool(eval_report_raw)
+    elif isinstance(eval_report_raw, str):
+        normalized = eval_report_raw.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            resolved["eval_account_report"] = True
+        elif normalized in {"0", "false", "no", "n", "off"}:
+            resolved["eval_account_report"] = False
+        else:
+            raise ValueError(
+                "Config key 'eval_account_report' phải là bool hợp lệ "
+                f"(true/false), nhận được: {eval_report_raw!r}"
+            )
+    else:
+        raise ValueError(
+            "Config key 'eval_account_report' phải là bool/int/str hợp lệ, "
+            f"nhận được: {type(eval_report_raw).__name__}"
+        )
 
     resolved["lr_schedule"] = str(resolved["lr_schedule"]).strip().lower()
     valid_schedules = {"constant", "linear", "cosine"}
@@ -559,7 +586,7 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
         k=cfg["k"],
     )
 
-    agent = DDQAgent(
+    agent = BranchingDDQAgent(
         model=model,
         lr=cfg["learning_rate"],
         gamma=cfg["gamma"],
@@ -686,7 +713,14 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
     else:
         logger.info("best_model.pt chưa tồn tại, dùng model hiện tại cho final eval")
 
-    test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
+    test_values = agent.evaluate(
+        test_env,
+        test_env.state_space,
+        n_episodes=cfg["n_eval_episodes"],
+        account_report=cfg["eval_account_report"],
+        report_every=cfg["eval_account_report_every"],
+        top_k_holdings=cfg["eval_account_report_top_k"],
+    )
     test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]
     avg_test = average_metrics(test_metrics_list)
     test_baselines = evaluate_baselines(test_env, cfg["initial_balance"])
@@ -793,7 +827,7 @@ def evaluate_branchingddq(
         dropout=eval_cfg["dropout"],
         k=eval_cfg["k"],
     )
-    agent = DDQAgent(
+    agent = BranchingDDQAgent(
         model=model,
         lr=eval_cfg["learning_rate"],
         gamma=eval_cfg["gamma"],
@@ -808,7 +842,14 @@ def evaluate_branchingddq(
     )
     agent.load(str(ckpt_path))
 
-    test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=eval_cfg["n_eval_episodes"])
+    test_values = agent.evaluate(
+        test_env,
+        test_env.state_space,
+        n_episodes=eval_cfg["n_eval_episodes"],
+        account_report=eval_cfg["eval_account_report"],
+        report_every=eval_cfg["eval_account_report_every"],
+        top_k_holdings=eval_cfg["eval_account_report_top_k"],
+    )
     test_metrics_list = [compute_all(pv, eval_cfg["initial_balance"]) for pv in test_values]
     avg_test = average_metrics(test_metrics_list)
     test_baselines = evaluate_baselines(test_env, eval_cfg["initial_balance"])
@@ -879,7 +920,3 @@ if __name__ == "__main__":
     else:
         train_branchingddq(config_path=args.config)
 
-
-# Backward-compatible aliases for legacy notebooks/scripts.
-train_ddq = train_branchingddq
-evaluate_ddq = evaluate_branchingddq

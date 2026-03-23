@@ -284,19 +284,6 @@ class BranchingDRQNNetwork(nn.Module):
 
             return actions, new_hidden
 
-
-class DRQNNetwork(BranchingDRQNNetwork):
-    """
-    Wrapper tương thích ngược cho code/test cũ kỳ vọng Q-value dạng flatten.
-
-    Forward trả về shape (batch, n_stocks * k) thay vì (batch, n_stocks, k).
-    select_action vẫn trả về vector action theo stock như BranchingDRQNNetwork.
-    """
-
-    def forward(self, market_state, portfolio_state, hidden=None):
-        q_values, new_hidden = super().forward(market_state, portfolio_state, hidden)
-        b = q_values.shape[0]
-        return q_values.reshape(b, -1), new_hidden
         
 # ============================================================
 #  Mạng PPO Actor-Critic

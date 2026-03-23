@@ -102,7 +102,7 @@ class ReplayBuffer:
         return self.size
 
 
-class DDQAgent:
+class BranchingDDQAgent:
     def __init__(
         self,
         model: BranchingDRQNNetwork,
@@ -152,6 +152,67 @@ class DDQAgent:
         self.total_steps = 0
         self.n_updates = 0
         self._train_step_counter = 0
+
+    @staticmethod
+    def _format_account_snapshot(
+        info: Dict[str, Any],
+        tickers: List[str],
+        prev_snapshot: Optional[Dict[str, Any]],
+        top_k_holdings: int,
+    ) -> tuple[str, Dict[str, Any]]:
+        cash = float(info.get("cash", 0.0))
+        holdings = np.asarray(info.get("holdings", []), dtype=np.int64)
+        prices = np.asarray(info.get("prices", []), dtype=np.float64)
+        holding_values = holdings.astype(np.float64) * prices
+
+        total_asset = float(info.get("portfolio_value", cash + float(np.sum(holding_values))))
+        prev_total_asset = None if prev_snapshot is None else float(prev_snapshot["total_asset"])
+        prev_cash = None if prev_snapshot is None else float(prev_snapshot["cash"])
+
+        delta_asset = 0.0 if prev_total_asset is None else total_asset - prev_total_asset
+        delta_asset_pct = (
+            0.0
+            if prev_total_asset is None or abs(prev_total_asset) < 1e-12
+            else (delta_asset / prev_total_asset) * 100.0
+        )
+        delta_cash = 0.0 if prev_cash is None else cash - prev_cash
+
+        header = (
+            f"[{info.get('date', 'N/A')}] step={info.get('step', -1)} | "
+            f"tong_tai_san={total_asset:,.0f} ({delta_asset:+,.0f}, {delta_asset_pct:+.2f}%) | "
+            f"tien_mat={cash:,.0f} ({delta_cash:+,.0f})"
+        )
+
+        non_zero_idx = np.flatnonzero(holdings)
+        positions = []
+        if non_zero_idx.size > 0:
+            ranked = non_zero_idx[np.argsort(holding_values[non_zero_idx])[::-1]]
+            if top_k_holdings > 0:
+                ranked = ranked[:top_k_holdings]
+
+            prev_holding_values = None if prev_snapshot is None else prev_snapshot["holding_values"]
+            for idx in ranked:
+                prev_value = 0.0 if prev_holding_values is None else float(prev_holding_values[idx])
+                delta_value = holding_values[idx] - prev_value
+                weight = 0.0 if abs(total_asset) < 1e-12 else (holding_values[idx] / total_asset) * 100.0
+                positions.append(
+                    f"  - {tickers[idx]} | qty={int(holdings[idx])} | "
+                    f"price={prices[idx]:,.2f} | value={holding_values[idx]:,.0f} | "
+                    f"delta={delta_value:+,.0f} | w={weight:.2f}%"
+                )
+
+            if top_k_holdings > 0 and non_zero_idx.size > len(ranked):
+                positions.append(f"  - ... ({non_zero_idx.size - len(ranked)} ma khac)")
+        else:
+            positions.append("  - Khong nam giu co phieu")
+
+        snapshot_text = "\n".join([header, "Danh muc:", *positions])
+        snapshot_state = {
+            "total_asset": total_asset,
+            "cash": cash,
+            "holding_values": holding_values,
+        }
+        return snapshot_text, snapshot_state
 
     # ------------------------------------------------------------------
     # Action
@@ -257,6 +318,9 @@ class DDQAgent:
         state_space,
         n_episodes: int = 5,
         deterministic: bool = True,
+        account_report: bool = False,
+        report_every: int = 1,
+        top_k_holdings: int = 0,
     ) -> List[List[float]]:
         self.model.eval()
         all_values: List[List[float]] = []
@@ -265,18 +329,46 @@ class DDQAgent:
             effective = 1
 
         eps = 0.0 if deterministic else 0.05
+        report_every = max(int(report_every), 1)
+
+        tickers = list(getattr(state_space, "tickers", []))
+        if not tickers:
+            tickers = [f"asset_{i}" for i in range(getattr(env, "n_stocks", 0))]
 
         with torch.no_grad():
-            for _ in range(effective):
-                obs, _ = env.reset()
+            for episode_idx in range(effective):
+                obs, info = env.reset()
                 done = False
                 pv = [env.portfolio_value]
+                prev_snapshot = None
+                step_counter = 0
+
+                if account_report:
+                    print(f"\n=== ACCOUNT REPORT | episode {episode_idx + 1}/{effective} ===")
+                    text, prev_snapshot = self._format_account_snapshot(
+                        info=info,
+                        tickers=tickers,
+                        prev_snapshot=prev_snapshot,
+                        top_k_holdings=int(top_k_holdings),
+                    )
+                    print(text)
 
                 while not done:
                     ms, ps = state_space.flat_obs_to_sequential(obs)
                     action = self.select_action(ms, ps, epsilon=eps)
-                    obs, _reward, terminated, truncated, _info = env.step(action)
+                    obs, _reward, terminated, truncated, info = env.step(action)
                     done = terminated or truncated
+                    step_counter += 1
+
+                    if account_report and (done or step_counter % report_every == 0):
+                        text, prev_snapshot = self._format_account_snapshot(
+                            info=info,
+                            tickers=tickers,
+                            prev_snapshot=prev_snapshot,
+                            top_k_holdings=int(top_k_holdings),
+                        )
+                        print(text)
+
                     pv.append(env.portfolio_value)
 
                 all_values.append(pv)
