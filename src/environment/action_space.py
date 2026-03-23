@@ -22,13 +22,13 @@ def decode_discrete_action(action, n_stocks, min_shares, cash, holdings, prices,
     total_available_cash = cash + sell_proceeds
 
     
-    # Giới hạn mỗi mã mua tối đa 20% NAV hoặc tổng tiền mặt hiện có
+    # Giới hạn mỗi lần mua tối đa 20% NAV hoặc tổng tiền mặt hiện có
     NAV = cash + np.sum(holdings * prices)
     cash_limit = min(total_available_cash, NAV * 0.2)
     n_stocks_to_buy = np.sum(action == 2)
 
     if n_stocks_to_buy > 0:
-        # Chia đều tiền cho các mã muốn mua, giới hạn bởi 20% NAV mỗi mã
+        # Chia đều tiền cho các mã muốn mua, giới hạn bởi 20% NAV tổng 
         budget_per_stock = int(cash_limit / n_stocks_to_buy)
         for i in range(n_stocks):
             if action[i] == 2:
