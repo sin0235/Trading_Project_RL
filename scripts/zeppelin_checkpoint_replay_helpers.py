@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -70,9 +71,66 @@ def _checkpoint_step(path: Path) -> int:
     if not stem.startswith("checkpoint_"):
         return -1
     try:
+        return int(stem.split("checkpoint_", 1)[1])
+    except (TypeError, ValueError, IndexError):
+        return -1
+
+
+def _summary_run_score(run_dir: Path) -> tuple[float, float, float]:
+    summary_path = run_dir / "summary.json"
+    summary: dict[str, Any] = {}
+    if summary_path.exists():
+        try:
+            summary = pd.read_json(summary_path, typ="series").to_dict()  # type: ignore[assignment]
+        except ValueError:
+            try:
+                import json
+
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                summary = {}
+
+    final_metrics = (summary or {}).get("final_metrics") or {}
+    total_return = final_metrics.get("total_return")
+    sharpe_ratio = final_metrics.get("sharpe_ratio")
+    try:
+        total_return = float(total_return)
+    except (TypeError, ValueError):
+        total_return = float("-inf")
+    try:
+        sharpe_ratio = float(sharpe_ratio)
+    except (TypeError, ValueError):
+        sharpe_ratio = float("-inf")
+    try:
+        mtime = float(run_dir.stat().st_mtime)
+    except OSError:
+        mtime = float("-inf")
+    return total_return, sharpe_ratio, mtime
+    try:
         return int(stem.split("_", 1)[1])
     except (IndexError, ValueError):
         return -1
+
+
+def _even_sample_indices(n: int, max_len: int) -> list[int]:
+    """Chọn index đều trên [0, n) để giảm kích thước payload JSON (Zeppelin angularBind)."""
+    if n <= 0:
+        return []
+    if n <= max_len:
+        return list(range(n))
+    if max_len <= 1:
+        return [n - 1]
+    positions = np.linspace(0, n - 1, num=max_len)
+    idxs = sorted({int(round(float(p))) for p in positions})
+    idxs[0] = 0
+    idxs[-1] = n - 1
+    return sorted(set(idxs))
+
+
+def _slim_replay_frame_for_zeppelin(frame: dict[str, Any]) -> None:
+    rows = frame.get("trade_rows")
+    if isinstance(rows, list) and len(rows) > 16:
+        frame["trade_rows"] = rows[:16]
 
 
 def _sample_evenly(paths: list[Path], count: int) -> list[Path]:
@@ -106,7 +164,10 @@ def select_replay_checkpoints(run_dir: str | Path, numeric_count: int = 4) -> li
         checkpoint_dir.glob("checkpoint_*.pt"),
         key=lambda candidate: (_checkpoint_step(candidate), candidate.stat().st_mtime),
     )
-    sampled = _sample_evenly(numeric_paths, numeric_count)
+    sampled = []
+    if numeric_paths:
+        sampled.append(numeric_paths[0])
+    sampled.extend(_sample_evenly(numeric_paths, numeric_count))
 
     candidates: list[tuple[str, str, Path]] = []
     for path in sampled:
@@ -143,6 +204,79 @@ def select_replay_checkpoints(run_dir: str | Path, numeric_count: int = 4) -> li
     extra_items = [item for item in deduped if item["kind"] != "numeric"]
     numeric_items.sort(key=lambda item: item["step"])
     return numeric_items + extra_items
+
+
+def select_replay_checkpoints_best_and_second(run_dir: str | Path) -> list[dict[str, Any]]:
+    """Chỉ best_model + checkpoint số thứ 2 (file checkpoint_*.pt sắp xếp theo bước)."""
+    run_path = Path(run_dir)
+    checkpoint_dirs = [run_path / "checkpoints", run_path]
+    checkpoint_dir = next((path for path in checkpoint_dirs if path.exists()), None)
+    if checkpoint_dir is None:
+        return []
+
+    numeric_paths = sorted(
+        checkpoint_dir.glob("checkpoint_*.pt"),
+        key=lambda candidate: (_checkpoint_step(candidate), candidate.stat().st_mtime),
+    )
+    best_path = checkpoint_dir / "best_model.pt"
+    out: list[dict[str, Any]] = []
+
+    if best_path.exists():
+        out.append(
+            {
+                "checkpoint_id": "best_model",
+                "label": "Checkpoint tốt nhất",
+                "path": best_path.resolve(),
+                "kind": "best_model",
+                "step": -1,
+            }
+        )
+
+    second_path: Path | None = None
+    if len(numeric_paths) >= 2:
+        second_path = numeric_paths[1]
+    elif len(numeric_paths) == 1:
+        only = numeric_paths[0]
+        if not out or str(only.resolve()) != str(out[0]["path"]):
+            second_path = only
+
+    if second_path is not None:
+        step = _checkpoint_step(second_path)
+        cid = f"checkpoint_{step}" if step >= 0 else second_path.stem
+        label = f"Checkpoint thứ 2 ({step:,} bước)" if step >= 0 else second_path.name
+        out.append(
+            {
+                "checkpoint_id": cid,
+                "label": label,
+                "path": second_path.resolve(),
+                "kind": "numeric",
+                "step": step,
+            }
+        )
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in out:
+        key = str(item["path"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    if not deduped and numeric_paths:
+        path = numeric_paths[0]
+        step = _checkpoint_step(path)
+        deduped.append(
+            {
+                "checkpoint_id": f"checkpoint_{step}" if step >= 0 else path.stem,
+                "label": f"Checkpoint ({step:,} bước)" if step >= 0 else path.name,
+                "path": path.resolve(),
+                "kind": "numeric",
+                "step": step,
+            }
+        )
+
+    return deduped
 
 
 def _load_run_config_for_replay(run_dir: Path) -> dict[str, Any]:
@@ -193,14 +327,19 @@ def find_replay_start_t(
     dates: list[Any] | pd.DatetimeIndex,
     display_start: Any,
     window_size: int,
+    max_start_t: int | None = None,
 ) -> int:
     date_index = pd.DatetimeIndex(pd.to_datetime(list(dates)))
     threshold = pd.Timestamp(display_start)
     min_start_t = max(window_size - 1, 0)
     matches = np.where(date_index >= threshold)[0]
     if len(matches) == 0:
-        return min_start_t
-    return int(max(min_start_t, matches[0] - 1))
+        start_t = min_start_t
+    else:
+        start_t = int(max(min_start_t, matches[0] - 1))
+    if max_start_t is not None:
+        start_t = min(start_t, int(max_start_t))
+    return int(start_t)
 
 
 def _trim_to_common_window(
@@ -296,7 +435,9 @@ def _download_recent_processed_data(
         end_date=end_date,
         interval="1D",
         source=source,
-        delay=0.0,
+        delay=3.5,
+        max_retries=3,
+        retry_buffer_seconds=3.0,
     )
     downloader.download_all()
     if len(downloader.data) != len(tickers):
@@ -304,6 +445,10 @@ def _download_recent_processed_data(
         raise RuntimeError(f"Tải vnstock chưa đủ mã: {missing}")
     raw_frames = [downloader.data[ticker] for ticker in tickers]
     return _process_downloaded_frames(raw_frames, features)
+
+
+def _vnstock_available() -> bool:
+    return find_spec("vnstock") is not None
 
 
 @dataclass
@@ -328,25 +473,35 @@ def _build_recent_dataset(
     vnstock_source: str,
     end_date: str | None = None,
 ) -> DatasetBundle:
-    today = pd.Timestamp(end_date or datetime.now().date())
-    display_start = today - pd.Timedelta(days=max(recent_months, 1) * 31)
+    today = pd.Timestamp(end_date or "2026-02-28")
+    effective_recent_months = max(int(recent_months), 7 if int(window_size) >= 60 else 4)
+    display_start = today - pd.Timedelta(days=effective_recent_months * 31)
     feature_buffer_days = max(int(window_size) * 2, 120)
-    requested_buffer_days = max(recent_months + warmup_months, 2) * 31
-    fetch_start = today - pd.Timedelta(days=max((max(recent_months, 1) * 31) + feature_buffer_days, requested_buffer_days))
+    requested_buffer_days = max(effective_recent_months + warmup_months, 2) * 31
+    fetch_start = today - pd.Timedelta(days=max((effective_recent_months * 31) + feature_buffer_days, requested_buffer_days))
     warnings: list[str] = []
 
+    requested_source = str(vnstock_source or "VCI").strip()
+    force_local = requested_source.lower() == "local"
+    if not force_local and not _vnstock_available():
+        warnings.append("Không có module vnstock trong môi trường Zeppelin, chuyển sang dữ liệu cục bộ.")
+        force_local = True
+
     try:
+        if force_local:
+            raise RuntimeError("Đã yêu cầu dùng dữ liệu cục bộ.")
         recent_data = _download_recent_processed_data(
             tickers=tickers,
             features=features,
             start_date=_as_date_str(fetch_start),
             end_date=_as_date_str(today),
-            source=vnstock_source,
+            source=requested_source,
         )
         source_name = "vnstock"
-        source_label = f"vnstock ({vnstock_source})"
-    except Exception as exc:
-        warnings.append(f"Không lấy được dữ liệu vnstock, dùng dữ liệu cục bộ: {exc}")
+        source_label = f"vnstock ({requested_source})"
+    except BaseException as exc:
+        if not force_local:
+            warnings.append(f"Không lấy được dữ liệu vnstock, dùng dữ liệu cục bộ: {exc}")
         recent_data, resolved_local_root = _load_local_processed_data(data_roots, tickers, features)
         source_name = "local"
         source_label = f"Dữ liệu cục bộ ({resolved_local_root})"
@@ -395,13 +550,21 @@ def _build_model(config: dict[str, Any], checkpoint_path: Path) -> PPOLSTMActorC
     return model
 
 
-def _make_eval_env(config: dict[str, Any], data_dict: dict[str, pd.DataFrame]) -> TradingEnv:
+def _make_eval_env(
+    config: dict[str, Any],
+    data_dict: dict[str, pd.DataFrame],
+    *,
+    min_shares: int | None = None,
+    trade_deadband: float | None = None,
+    max_weight_change_per_step: float | None = None,
+) -> TradingEnv:
     return TradingEnv(
         tickers=list(config["tickers"]),
         mode="continuous",
         initial_balance=float(config["initial_balance"]),
         fee_rate=float(config["fee_rate"]),
         window_size=int(config["window_size"]),
+        min_shares=int(min_shares if min_shares is not None else config.get("min_shares", 100)),
         data_dict=data_dict,
         features=list(config["features"]),
         max_steps=999999,
@@ -409,8 +572,12 @@ def _make_eval_env(config: dict[str, Any], data_dict: dict[str, pd.DataFrame]) -
         reward_scaling=float(config["reward_scaling"]),
         reward_name=str(config["reward_name"]),
         reward_kwargs={"window": int(config.get("reward_window", 30))},
-        trade_deadband=float(config["trade_deadband"]),
-        max_weight_change_per_step=float(config["max_weight_change_per_step"]),
+        trade_deadband=float(trade_deadband if trade_deadband is not None else config["trade_deadband"]),
+        max_weight_change_per_step=float(
+            max_weight_change_per_step
+            if max_weight_change_per_step is not None
+            else config["max_weight_change_per_step"]
+        ),
         print_verbosity=999999,
     )
 
@@ -469,6 +636,9 @@ def _trade_rows(
 ) -> list[dict[str, Any]]:
     rows = []
     for idx, ticker in enumerate(tickers):
+        trade_shares = int(abs(trades[idx]))
+        if trade_shares <= 0:
+            continue
         trade_value = abs(float(trades[idx]) * float(execution_prices[idx]))
         direction = "Giữ"
         if trades[idx] > 0:
@@ -479,7 +649,7 @@ def _trade_rows(
             {
                 "symbol": ticker,
                 "direction": direction,
-                "shares": int(abs(trades[idx])),
+                "shares": trade_shares,
                 "execution_price": round(float(execution_prices[idx]), 2),
                 "close_price": round(float(close_prices[idx]), 2),
                 "holding_shares": int(holdings[idx]),
@@ -600,17 +770,37 @@ def _build_benchmark_replay(
     data_dict: dict[str, pd.DataFrame],
     display_start: str,
 ) -> dict[str, Any]:
-    env = _make_eval_env(config, data_dict)
+    env = _make_eval_env(
+        config,
+        data_dict,
+        min_shares=1,
+        trade_deadband=0.0,
+        max_weight_change_per_step=1.0,
+    )
     start_t = find_replay_start_t(
         dates=env.state_space.dates,
         display_start=display_start,
         window_size=int(config["window_size"]),
+        max_start_t=int(env.max_t - env.max_steps),
     )
-    n_assets = len(config["tickers"]) + 1
-    equal_weight = np.full(n_assets, 1.0 / n_assets, dtype=np.float32)
+    n_stocks = len(config["tickers"])
+    if n_stocks <= 0:
+        raise ValueError("Replay benchmark không có ticker để mô phỏng.")
+
+    # Danh mục đều: phân bổ đều toàn bộ vốn vào các mã cổ phiếu, không neo tiền mặt.
+    # Mua và giữ: mua một lần theo tỷ trọng ban đầu rồi giữ nguyên.
+    equal_weight = np.concatenate(
+        [np.full(n_stocks, 1.0 / n_stocks, dtype=np.float32), np.array([0.0], dtype=np.float32)]
+    )
 
     eq_frames, eq_values = _run_episode_replay(
-        env=_make_eval_env(config, data_dict),
+        env=_make_eval_env(
+            config,
+            data_dict,
+            min_shares=1,
+            trade_deadband=0.0,
+            max_weight_change_per_step=1.0,
+        ),
         policy_fn=lambda _env, _obs, _step_idx: equal_weight,
         start_t=start_t,
         tickers=list(config["tickers"]),
@@ -628,12 +818,24 @@ def _build_benchmark_replay(
         ).astype(np.float32)
 
     bh_frames, bh_values = _run_episode_replay(
-        env=_make_eval_env(config, data_dict),
+        env=_make_eval_env(
+            config,
+            data_dict,
+            min_shares=1,
+            trade_deadband=0.0,
+            max_weight_change_per_step=1.0,
+        ),
         policy_fn=buy_hold_policy,
         start_t=start_t,
         tickers=list(config["tickers"]),
         initial_balance=float(config["initial_balance"]),
     )
+
+    keep_from = next((idx for idx, frame in enumerate(eq_frames) if str(frame["date"]) >= str(display_start)), 0)
+    eq_frames = eq_frames[keep_from:]
+    eq_values = eq_values[keep_from:]
+    bh_frames = bh_frames[keep_from:]
+    bh_values = bh_values[keep_from:]
 
     return {
         "display_start": display_start,
@@ -650,6 +852,7 @@ def _checkpoint_payload(
     config: dict[str, Any],
     dataset: DatasetBundle,
     benchmark: dict[str, Any],
+    max_frames: int | None = None,
 ) -> dict[str, Any]:
     model = _build_model(config, checkpoint_info["path"])
     env = _make_eval_env(config, dataset.data_dict)
@@ -674,22 +877,45 @@ def _checkpoint_payload(
 
     eq_values = benchmark["equal_weight_values"]
     bh_values = benchmark["buy_hold_values"]
-    if len(eq_values) != len(values) or len(bh_values) != len(values):
-        raise ValueError("Replay benchmark và checkpoint không cùng số bước.")
+    common_length = min(len(values), len(eq_values), len(bh_values))
+    if common_length <= 0:
+        raise ValueError("Replay checkpoint không có đủ dữ liệu để dựng theo ngày.")
+    if common_length != len(values) or common_length != len(eq_values) or common_length != len(bh_values):
+        frames = frames[:common_length]
+        values = values[:common_length]
+        eq_values = eq_values[:common_length]
+        bh_values = bh_values[:common_length]
 
     for idx, frame in enumerate(frames):
         equal_value = float(eq_values[idx])
         buy_hold_value = float(bh_values[idx])
+        model_return_pct = ((float(frame["portfolio_value"]) / initial_balance) - 1.0) * 100.0 if initial_balance else None
+        equal_return_pct = ((equal_value / initial_balance) - 1.0) * 100.0 if initial_balance else None
+        buy_hold_return_pct = ((buy_hold_value / initial_balance) - 1.0) * 100.0 if initial_balance else None
         frame["equal_weight_value"] = round(equal_value, 2)
         frame["buy_hold_value"] = round(buy_hold_value, 2)
-        frame["vs_equal_weight_pct"] = round(((frame["portfolio_value"] / equal_value) - 1.0) * 100.0, 4) if equal_value else None
-        frame["vs_buy_hold_pct"] = round(((frame["portfolio_value"] / buy_hold_value) - 1.0) * 100.0, 4) if buy_hold_value else None
+        frame["equal_weight_return_pct"] = round(equal_return_pct, 4) if equal_return_pct is not None else None
+        frame["buy_hold_return_pct"] = round(buy_hold_return_pct, 4) if buy_hold_return_pct is not None else None
+        frame["vs_equal_weight_pct"] = round(model_return_pct - equal_return_pct, 4) if model_return_pct is not None and equal_return_pct is not None else None
+        frame["vs_buy_hold_pct"] = round(model_return_pct - buy_hold_return_pct, 4) if model_return_pct is not None and buy_hold_return_pct is not None else None
+
+    if max_frames is not None and len(frames) > max_frames:
+        idxs = _even_sample_indices(len(frames), max_frames)
+        frames = [frames[i] for i in idxs]
+        values = [values[i] for i in idxs]
+        eq_values = [eq_values[i] for i in idxs]
+        bh_values = [bh_values[i] for i in idxs]
+
+    for frame in frames:
+        _slim_replay_frame_for_zeppelin(frame)
 
     series_min = min(values + eq_values + bh_values)
     series_max = max(values + eq_values + bh_values)
     model_points, marker_xs, chart_min, chart_max = _svg_points(values, min_value=series_min, max_value=series_max)
     eq_points, _, _, _ = _svg_points(eq_values, min_value=series_min, max_value=series_max)
     bh_points, _, _, _ = _svg_points(bh_values, min_value=series_min, max_value=series_max)
+    for idx, frame in enumerate(frames):
+        frame["marker_x"] = marker_xs[idx] if idx < len(marker_xs) else None
 
     final_value = float(values[-1]) if values else float(config["initial_balance"])
     initial_balance = float(config["initial_balance"])
@@ -722,12 +948,13 @@ def build_checkpoint_replay_payload(
     project_root: str | Path,
     results_dir: str | Path | None = None,
     data_dir: str | Path | None = None,
-    recent_months: int = 4,
+    recent_months: int = 7,
     warmup_months: int = 4,
-    run_limit: int = 3,
+    run_limit: int = 1,
     checkpoint_samples: int = 4,
     vnstock_source: str = "VCI",
-    end_date: str | None = None,
+    end_date: str | None = "2026-02-28",
+    max_frames_per_checkpoint: int | None = 420,
 ) -> dict[str, Any]:
     runs_root = _results_root(project_root, results_dir)
     if not runs_root.exists():
@@ -735,13 +962,18 @@ def build_checkpoint_replay_payload(
 
     run_dirs = sorted(
         [path for path in runs_root.iterdir() if path.is_dir()],
-        key=lambda item: item.stat().st_mtime,
+        key=_summary_run_score,
         reverse=True,
     )
 
     replay_runs: list[dict[str, Any]] = []
     dataset_cache: dict[tuple[str, ...], tuple[DatasetBundle, dict[str, Any]]] = {}
     warnings: list[str] = []
+    if max_frames_per_checkpoint is not None and max_frames_per_checkpoint > 0:
+        warnings.append(
+            f"Mỗi checkpoint chỉ giữ tối đa {max_frames_per_checkpoint} frame trong payload Zeppelin "
+            "(tránh angularBind/JSON.parse quá lớn trên trình duyệt)."
+        )
 
     for run_dir in run_dirs:
         if len(replay_runs) >= max(run_limit, 1):
@@ -753,7 +985,10 @@ def build_checkpoint_replay_payload(
             warnings.append(f"Bỏ qua {run_dir.name}: {exc}")
             continue
 
-        checkpoints = select_replay_checkpoints(run_dir, numeric_count=checkpoint_samples)
+        checkpoints = select_replay_checkpoints(
+            run_dir,
+            numeric_count=max(int(checkpoint_samples), 3),
+        )
         if not checkpoints:
             warnings.append(f"Bỏ qua {run_dir.name}: không có checkpoint hợp lệ.")
             continue
@@ -794,17 +1029,48 @@ def build_checkpoint_replay_payload(
                 config=config,
                 dataset=dataset,
                 benchmark=benchmark,
+                max_frames=max_frames_per_checkpoint,
             )
             for checkpoint in checkpoints
         ]
 
-        default_checkpoint = next(
-            (item for item in checkpoint_payloads if item["checkpoint_id"] == "final_model"),
-            next(
-                (item for item in checkpoint_payloads if item["checkpoint_id"] == "best_model"),
-                checkpoint_payloads[-1],
+        best_checkpoint = next(
+            (item for item in checkpoint_payloads if item["checkpoint_id"] == "best_model"),
+            checkpoint_payloads[0],
+        )
+        worst_checkpoint = min(
+            checkpoint_payloads,
+            key=lambda item: (
+                float(item.get("summary", {}).get("final_return_pct", 0.0)),
+                float(item.get("summary", {}).get("worst_value", float("inf"))),
             ),
         )
+        first_numeric_checkpoint = next(
+            (item for item in checkpoint_payloads if item.get("kind") == "numeric"),
+            checkpoint_payloads[0],
+        )
+        for item in checkpoint_payloads:
+            item["compare_to_best"] = {
+                "best_checkpoint_id": best_checkpoint["checkpoint_id"],
+                "delta_final_value": round(
+                    float(item["summary"]["final_value"]) - float(best_checkpoint["summary"]["final_value"]),
+                    2,
+                ),
+                "delta_final_return_pct": round(
+                    float(item["summary"]["final_return_pct"]) - float(best_checkpoint["summary"]["final_return_pct"]),
+                    4,
+                ),
+                "delta_best_value": round(
+                    float(item["summary"]["best_value"]) - float(best_checkpoint["summary"]["best_value"]),
+                    2,
+                ),
+                "delta_worst_value": round(
+                    float(item["summary"]["worst_value"]) - float(best_checkpoint["summary"]["worst_value"]),
+                    2,
+                ),
+            }
+
+        default_checkpoint = best_checkpoint
 
         replay_runs.append(
             {
@@ -819,6 +1085,14 @@ def build_checkpoint_replay_payload(
                 "checkpoints": checkpoint_payloads,
                 "checkpointMap": {item["checkpoint_id"]: item for item in checkpoint_payloads},
                 "defaultCheckpointId": default_checkpoint["checkpoint_id"],
+                "bestCheckpointId": best_checkpoint["checkpoint_id"],
+                "worstCheckpointId": worst_checkpoint["checkpoint_id"],
+                "firstCheckpointId": first_numeric_checkpoint["checkpoint_id"],
+                "defaultCompareCheckpointId": (
+                    worst_checkpoint["checkpoint_id"]
+                    if worst_checkpoint["checkpoint_id"] != default_checkpoint["checkpoint_id"]
+                    else first_numeric_checkpoint["checkpoint_id"]
+                ),
             }
         )
         warnings.extend(dataset.warnings)
@@ -841,6 +1115,7 @@ def build_checkpoint_replay_payload(
         "built_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "recent_months": int(recent_months),
         "run_limit": int(run_limit),
+        "max_frames_per_checkpoint": max_frames_per_checkpoint,
         "defaultRunId": default_run["run_id"],
         "runs": replay_runs,
         "runMap": {run["run_id"]: run for run in replay_runs},

@@ -1,0 +1,209 @@
+%spark.pyspark
+import json
+from pathlib import Path
+
+PROJECT_ROOT = str(z.input("project_root", "/workspace/project") or "/workspace/project").strip() or "/workspace/project"
+cache_dir = Path(PROJECT_ROOT).expanduser().resolve() / ".zeppelin_cache"
+payload_path = cache_dir / "dashboard_payload.json"
+if not payload_path.exists():
+    payload_path = cache_dir / "dashboard_train_payload.json"
+if not payload_path.exists():
+    raise FileNotFoundError("Chưa có dashboard cache. Hãy chạy paragraph setup trước.")
+
+payload = json.loads(payload_path.read_text(encoding="utf-8"))
+payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+
+html = f'''%html
+<style>
+  .rl-shell {{
+    --ink: #0b1b2b;
+    --muted: #486178;
+    --line: #d7e2ee;
+    --panel: rgba(255,255,255,0.98);
+    --panel-strong: #10273f;
+    --sea: #0f766e;
+    --sea-soft: #dff6f1;
+    --amber: #9a5d08;
+    --amber-soft: #ffefc8;
+    --rose: #b42318;
+    --rose-soft: #fde8e8;
+    --sky: #1d4ed8;
+    --sky-soft: #e6f0ff;
+    font-family: 'Aptos', 'Trebuchet MS', 'Segoe UI', sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at top right, rgba(255, 214, 153, 0.26), transparent 30%),
+      radial-gradient(circle at left bottom, rgba(120, 197, 173, 0.18), transparent 25%),
+      linear-gradient(180deg, #fffaf2 0%, #eef4fa 100%);
+    border: 1px solid #d8e1ea;
+    border-radius: 28px;
+    padding: 24px;
+  }}
+  .rl-grid, .rl-card-grid, .rl-bottom {{ display:grid; gap:16px; }}
+  .rl-grid {{ grid-template-columns: 1.2fr 0.8fr; margin-bottom: 18px; }}
+  .rl-card-grid {{ grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 18px; }}
+  .rl-bottom {{ grid-template-columns: 1.1fr 0.9fr; margin-bottom: 18px; }}
+  .rl-panel {{ background: var(--panel); border:1px solid rgba(216,226,236,0.98); border-radius:20px; padding:18px; box-shadow:0 12px 28px rgba(15,23,42,0.06); }}
+  .rl-panel-dark {{ background: linear-gradient(180deg, #12263d 0%, #0f172a 100%); color:#f8fbff; }}
+  .rl-panel-dark h2, .rl-panel-dark h3, .rl-panel-dark p, .rl-panel-dark strong, .rl-panel-dark label {{ color:#f8fbff; }}
+  .rl-panel h2, .rl-panel h3, .rl-panel h4 {{ margin:0 0 10px 0; }}
+  .rl-panel p {{ margin:0 0 12px 0; color:#33495f; line-height:1.6; font-weight:500; }}
+  .rl-kicker, .rl-chip, .rl-badge {{ border-radius:999px; display:inline-flex; align-items:center; gap:8px; font-weight:700; }}
+  .rl-kicker {{ padding:6px 10px; background:#e4f6ec; color:#15624f; font-size:12px; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:10px; }}
+  .rl-chip {{ padding:7px 11px; background:#edf5ff; color:#27496f; font-size:12px; margin:0 8px 8px 0; }}
+  .rl-badge {{ padding:7px 11px; background:var(--sea-soft); color:var(--sea); font-size:12px; margin:0 8px 8px 0; }}
+  .rl-control-row {{ display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:12px; }}
+  .rl-control {{ min-width:220px; flex:1 1 220px; }}
+  .rl-label {{ display:block; margin-bottom:8px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; color:#d7e4f2; }}
+  .rl-select, .rl-slider {{ width:100%; box-sizing:border-box; }}
+  .rl-select {{ padding:11px 12px; border-radius:14px; border:1px solid rgba(20,37,56,0.18); background:#fff; color:var(--ink); font-weight:600; }}
+  .rl-slider {{ accent-color: var(--sea); }}
+  .rl-mini-grid {{ display:grid; gap:12px; grid-template-columns:repeat(2,minmax(0,1fr)); }}
+  .rl-mini {{ background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:12px; }}
+  .rl-mini span {{ display:block; color:#d7e4f2; font-size:12px; margin-bottom:4px; }}
+  .rl-mini strong {{ font-size:20px; }}
+  .rl-card {{ background:rgba(255,255,255,0.95); border:1px solid rgba(216,226,236,0.98); border-radius:18px; padding:16px; box-shadow:0 10px 24px rgba(15,23,42,0.05); }}
+  .rl-card-label {{ color:#365068; font-size:12px; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px; font-weight:700; }}
+  .rl-card-value {{ font-size:24px; font-weight:800; line-height:1.08; color:var(--ink); }}
+  .rl-card-sub {{ margin-top:8px; color:#486178; font-size:12px; line-height:1.5; font-weight:500; }}
+  .rl-positive {{ color:#117a46; }}
+  .rl-negative {{ color:var(--rose); }}
+  .rl-chart-box {{ background:linear-gradient(180deg, #ffffff 0%, #eef6ff 100%); border-radius:18px; padding:10px; border:1px solid rgba(216,226,236,0.8); }}
+  .rl-chart-box svg {{ width:100%; height:280px; }}
+  .rl-terminal {{ background:linear-gradient(180deg, #0f2137 0%, #17314f 100%); color:#f8fbff; }}
+  .rl-terminal h3, .rl-terminal p, .rl-terminal strong, .rl-terminal span {{ color:#f8fbff; }}
+  .rl-market-strip, .rl-frame-metrics {{ display:grid; gap:10px; }}
+  .rl-market-strip {{ grid-template-columns:repeat(4, minmax(0,1fr)); margin-top:14px; }}
+  .rl-frame-metrics {{ grid-template-columns:repeat(3, minmax(0,1fr)); margin-top:12px; }}
+  .rl-metric {{ background:rgba(255,255,255,0.08); border-radius:14px; padding:12px; }}
+  .rl-metric span {{ display:block; color:#d6e5f5; font-size:12px; margin-bottom:4px; }}
+  .rl-metric strong {{ font-size:19px; }}
+  .rl-btn-row {{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }}
+  .rl-btn {{ border:none; border-radius:999px; padding:8px 12px; background:#e8f3ff; color:#24486b; font-weight:700; cursor:pointer; }}
+  .rl-btn-primary {{ background:#dff6f1; color:var(--sea); }}
+  .rl-table {{ width:100%; border-collapse:collapse; }}
+  .rl-table th, .rl-table td {{ padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; font-size:13px; vertical-align:top; }}
+  .rl-table th {{ color:#284258; font-weight:800; }}
+  .rl-table td {{ color:var(--ink); }}
+  .rl-alert {{ border-radius:999px; padding:7px 11px; background:var(--amber-soft); color:var(--amber); font-size:12px; font-weight:700; display:inline-flex; margin:0 8px 8px 0; }}
+  .rl-muted {{ color:var(--muted); }}
+  .rl-legend span {{ display:inline-block; margin-right:12px; font-size:12px; font-weight:700; }}
+  @media (max-width: 1100px) {{ .rl-grid, .rl-bottom {{ grid-template-columns:1fr; }} .rl-card-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .rl-market-strip, .rl-frame-metrics {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
+  @media (max-width: 720px) {{ .rl-card-grid, .rl-market-strip, .rl-frame-metrics {{ grid-template-columns:1fr; }} }}
+</style>
+<div class="rl-shell">
+  <div id="rl-app">Đang tải dashboard...</div>
+  <script id="rl-payload" type="application/json">{payload_json}</script>
+  <script>
+  (function () {{
+    var root = document.getElementById('rl-app');
+    var payloadEl = document.getElementById('rl-payload');
+    if (!root || !payloadEl) return;
+    var data = JSON.parse(payloadEl.textContent || '{{}}');
+    var state = {{ runIndex: 0, replayRunIndex: 0, checkpointIndex: 0, frameIndex: 0, speedMs: 220, playing: false, timer: null }};
+    function esc(v) {{ return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }}
+    function num(v, digits) {{ if (v == null || v === '' || Number.isNaN(Number(v))) return 'N/A'; return Number(v).toLocaleString('vi-VN', {{ minimumFractionDigits: digits, maximumFractionDigits: digits }}); }}
+    function pctClass(v) {{ return Number(v) >= 0 ? 'rl-positive' : 'rl-negative'; }}
+    function stopTimer() {{ if (state.timer) {{ clearInterval(state.timer); state.timer = null; }} state.playing = false; }}
+    function runs() {{ return Array.isArray(data.runs) ? data.runs : []; }}
+    function currentRun() {{ return runs()[state.runIndex] || runs()[0] || {{ run_id:'N/A', label:'Chưa có dữ liệu train', total_episodes:0, total_updates:0, summary:{{}}, eval:{{first_val:{{}},last_val:{{}},final_test:{{}}}}, chart:{{}}, benchmarks:{{highlights:{{test_equal_weight:{{}},test_buy_hold:{{}}}},rows:[]}}, config:{{}}, split:{{train:{{}},val:{{}},test:{{}}}} }}; }}
+    function replayMeta() {{ return data.checkpointReplay || {{ status:'disabled', message:'Replay chưa sẵn sàng', warnings:[], runs:[] }}; }}
+    function replayRuns() {{ return Array.isArray(replayMeta().runs) ? replayMeta().runs : []; }}
+    function currentReplayRun() {{ return replayRuns()[state.replayRunIndex] || replayRuns()[0] || {{ checkpoints:[], tickers:[], n_days:0 }}; }}
+    function checkpoints() {{ return Array.isArray(currentReplayRun().checkpoints) ? currentReplayRun().checkpoints : []; }}
+    function currentCheckpoint() {{ return checkpoints()[state.checkpointIndex] || checkpoints()[0] || {{ frames:[], chart:{{marker_xs:[]}}, summary:{{}} }}; }}
+    function frames() {{ return Array.isArray(currentCheckpoint().frames) ? currentCheckpoint().frames : []; }}
+    function clampFrame() {{ var total = frames().length; if (!total) {{ state.frameIndex = 0; return; }} if (state.frameIndex >= total) state.frameIndex = total - 1; if (state.frameIndex < 0) state.frameIndex = 0; }}
+    function currentFrame() {{ clampFrame(); return frames()[state.frameIndex] || {{ top_allocations:[], top_positions:[], trade_rows:[] }}; }}
+    function htmlOptions(list, selectedIndex, labelFn) {{ return list.map(function(item, idx) {{ return '<option value="'+idx+'"'+(idx===selectedIndex?' selected':'')+'>'+esc(labelFn(item, idx))+'</option>'; }}).join(''); }}
+    function htmlRows(list, rowFn, emptyHtml) {{ return list && list.length ? list.map(rowFn).join('') : (emptyHtml || '<tr><td colspan="6">Không có dữ liệu</td></tr>'); }}
+    function playTimer() {{ stopTimer(); state.playing = true; state.timer = setInterval(function () {{ var total = frames().length; if (!total || state.frameIndex >= total - 1) {{ stopTimer(); render(); return; }} state.frameIndex += 1; render(); }}, state.speedMs); }}
+    function render() {{
+      var run = currentRun();
+      var debug = data.debug || {{}};
+      var live = data.liveMarket || {{ rows:[], alerts:[], tracked_symbols:[] }};
+      var replay = replayMeta();
+      var replayRun = currentReplayRun();
+      var checkpoint = currentCheckpoint();
+      var frame = currentFrame();
+      var frameList = frames();
+      var markerXs = (checkpoint.chart && checkpoint.chart.marker_xs) || [];
+      var markerX = markerXs[state.frameIndex] || 14;
+      var warnings = Array.isArray(replay.warnings) ? replay.warnings : [];
+      root.innerHTML = `
+        <section class="rl-grid">
+          <div class="rl-panel">
+            <div class="rl-kicker">PPO Trading Dashboard</div>
+            <h2>Theo dõi quá trình học của policy và replay checkpoint trên dữ liệu mới</h2>
+            <p>Paragraph này đọc trực tiếp cache đã dựng, không đi qua Angular bind nữa. Nếu cache đã có thì render lại là thấy ngay.</p>
+            <div>
+              <span class="rl-chip">Run mặc định: ${esc(debug.default_run_id || run.run_id)}</span>
+              <span class="rl-chip">Build payload: ${esc(debug.build_tag || 'n/a')}</span>
+              <span class="rl-chip">Replay: ${esc(replay.status || 'n/a')}</span>
+              <span class="rl-chip">Số run train: ${esc(runs().length || 0)}</span>
+              <span class="rl-chip">Số run replay: ${esc(replayRuns().length || 0)}</span>
+            </div>
+          </div>
+          <div class="rl-panel rl-panel-dark">
+            <h3>Điều khiển nhanh</h3>
+            <div class="rl-control-row">
+              <div class="rl-control">
+                <label class="rl-label">Chọn run train</label>
+                <select id="runSelect" class="rl-select">${htmlOptions(runs(), state.runIndex, function(item) {{ return item.label || item.run_id; }})}</select>
+              </div>
+              <div class="rl-control">
+                <label class="rl-label">Chọn run replay</label>
+                <select id="replayRunSelect" class="rl-select">${htmlOptions(replayRuns(), state.replayRunIndex, function(item) {{ return item.label || item.run_id; }})}</select>
+              </div>
+            </div>
+            <div class="rl-mini-grid">
+              <div class="rl-mini"><span>Mã live</span><strong>${esc((live.rows || []).length)}</strong></div>
+              <div class="rl-mini"><span>Tổng episode</span><strong>${esc(run.total_episodes || 0)}</strong></div>
+              <div class="rl-mini"><span>Checkpoint</span><strong>${esc(checkpoints().length || 0)}</strong></div>
+              <div class="rl-mini"><span>Làm mới lúc</span><strong style="font-size:14px;">${esc(live.refreshed_at || 'N/A')}</strong></div>
+            </div>
+          </div>
+        </section>
+        <section class="rl-card-grid">
+          <div class="rl-card"><div class="rl-card-label">Tổng lợi nhuận cuối</div><div class="rl-card-value">${num(((run.summary && run.summary.total_return) != null ? run.summary.total_return * 100 : ((run.eval && run.eval.final_test && run.eval.final_test.total_return) != null ? run.eval.final_test.total_return * 100 : null)), 2)}%</div><div class="rl-card-sub">Kết quả cuối của run trên tập đánh giá.</div></div>
+          <div class="rl-card"><div class="rl-card-label">Sharpe ratio</div><div class="rl-card-value">${num(((run.summary && run.summary.sharpe_ratio) != null ? run.summary.sharpe_ratio : (run.eval && run.eval.final_test && run.eval.final_test.sharpe_ratio)), 3)}</div><div class="rl-card-sub">Lợi nhuận đã hiệu chỉnh theo rủi ro.</div></div>
+          <div class="rl-card"><div class="rl-card-label">Mức cải thiện học</div><div class="rl-card-value ${pctClass(run.delta_return_pct || 0)}">${num(run.delta_return_pct, 2)} điểm</div><div class="rl-card-sub">Giai đoạn cuối trừ giai đoạn đầu.</div></div>
+          <div class="rl-card"><div class="rl-card-label">Tỷ lệ ngày thắng</div><div class="rl-card-value">${num(((run.summary && run.summary.win_rate) != null ? run.summary.win_rate * 100 : null), 2)}%</div><div class="rl-card-sub">Tỷ lệ ngày có lợi nhuận dương.</div></div>
+        </section>
+        <section class="rl-bottom">
+          <div class="rl-panel">
+            <h3>Đường lợi nhuận theo episode</h3>
+            <div class="rl-chart-box"><svg viewBox="0 0 620 220" preserveAspectRatio="none">${(run.chart && run.chart.zero_y != null) ? '<line x1="14" x2="606" y1="'+esc(run.chart.zero_y)+'" y2="'+esc(run.chart.zero_y)+'" stroke="#cbd6e4" stroke-dasharray="6 6"></line>' : ''}<polyline points="${esc(run.chart && run.chart.raw_points || '')}" fill="none" stroke="#90a4bb" stroke-width="2"></polyline><polyline points="${esc(run.chart && run.chart.ma_points || '')}" fill="none" stroke="#0f766e" stroke-width="4"></polyline></svg></div>
+          </div>
+          <div class="rl-panel"><h3>Snapshot thị trường hiện tại</h3><table class="rl-table"><thead><tr><th>Mã</th><th>Giá live</th><th>1 ngày</th><th>So với local</th><th>Trạng thái</th></tr></thead><tbody>${htmlRows(live.rows || [], function(row) {{ return '<tr><td><strong>'+esc(row.symbol)+'</strong><br><span class="rl-muted">'+esc(row.last_date)+'</span></td><td><strong>'+(row.live_price != null ? num(row.live_price,0) : 'N/A')+'</strong><br><span class="rl-muted">local '+num(row.last_close,0)+'</span></td><td class="'+pctClass(row.change_pct || 0)+'">'+num(row.change_pct,2)+'%</td><td class="'+pctClass(row.gap_vs_last_close_pct || 0)+'">'+num(row.gap_vs_last_close_pct,2)+'%</td><td>'+esc(row.status)+'</td></tr>'; }}, '<tr><td colspan="5">Không có dữ liệu live.</td></tr>')}</tbody></table></div>
+        </section>
+        <section class="rl-panel rl-terminal">
+          <div class="rl-kicker">Replay Checkpoint</div>
+          <h3>Soi policy theo từng ngày giao dịch mới</h3>
+          <p>${esc(replay.message || 'Không có replay cache.')}</p>
+          ${warnings.map(function(w) {{ return '<span class="rl-alert">'+esc(w)+'</span>'; }}).join('')}
+          <div class="rl-control-row" style="margin-top:12px;"><div class="rl-control"><label class="rl-label">Checkpoint</label><select id="checkpointSelect" class="rl-select">${htmlOptions(checkpoints(), state.checkpointIndex, function(item) {{ return item.label || item.checkpoint_id; }})}</select></div><div class="rl-control"><label class="rl-label">Tốc độ</label><select id="speedSelect" class="rl-select">${[[650,'1x'],[380,'2x'],[220,'4x'],[130,'8x']].map(function(item) {{ return '<option value="'+item[0]+'"'+(item[0]===state.speedMs?' selected':'')+'>'+item[1]+'</option>'; }}).join('')}</select></div><div class="rl-control"><label class="rl-label">Ngày</label><input id="frameSlider" class="rl-slider" type="range" min="0" max="${Math.max(frameList.length - 1, 0)}" value="${Math.min(state.frameIndex, Math.max(frameList.length - 1, 0))}"></div></div>
+          <div class="rl-btn-row"><button class="rl-btn" id="btnStart">Về đầu</button><button class="rl-btn" id="btnPrev">Lùi 1 ngày</button><button class="rl-btn rl-btn-primary" id="btnPlay">${state.playing ? 'Tạm dừng' : 'Phát tự động'}</button><button class="rl-btn rl-btn-primary" id="btnNext">Tiến 1 ngày</button><span class="rl-badge">Checkpoint: ${esc(checkpoint.label || checkpoint.checkpoint_id || 'N/A')}</span><span class="rl-badge">Ngày: ${esc(frame.date || 'N/A')}</span></div>
+          <div class="rl-market-strip"><div class="rl-metric"><span>Giá trị danh mục</span><strong>${num(frame.portfolio_value,0)}</strong></div><div class="rl-metric"><span>Lợi nhuận lũy kế</span><strong class="${pctClass(frame.total_return_pct || 0)}">${num(frame.total_return_pct,2)}%</strong></div><div class="rl-metric"><span>Lợi nhuận ngày</span><strong class="${pctClass(frame.day_return_pct || 0)}">${num(frame.day_return_pct,2)}%</strong></div><div class="rl-metric"><span>Tỷ trọng tiền mặt</span><strong>${num(frame.cash_weight_pct,2)}%</strong></div></div>
+          <div class="rl-frame-metrics"><div class="rl-metric"><span>So với danh mục đều</span><strong class="${pctClass(frame.vs_equal_weight_pct || 0)}">${num(frame.vs_equal_weight_pct,2)}%</strong></div><div class="rl-metric"><span>So với mua và giữ</span><strong class="${pctClass(frame.vs_buy_hold_pct || 0)}">${num(frame.vs_buy_hold_pct,2)}%</strong></div><div class="rl-metric"><span>Phí hôm nay</span><strong>${num(frame.fees,0)}</strong></div><div class="rl-metric"><span>Số lệnh</span><strong>${esc(frame.trade_count || 0)}</strong></div><div class="rl-metric"><span>Danh mục đều</span><strong>${num(frame.equal_weight_value,0)}</strong></div><div class="rl-metric"><span>Mua và giữ</span><strong>${num(frame.buy_hold_value,0)}</strong></div></div>
+          <div style="margin-top:16px;" class="rl-chart-box"><svg viewBox="0 0 620 220" preserveAspectRatio="none"><polyline points="${esc(checkpoint.chart && checkpoint.chart.buy_hold_points || '')}" fill="none" stroke="#6b8ab6" stroke-width="3"></polyline><polyline points="${esc(checkpoint.chart && checkpoint.chart.equal_weight_points || '')}" fill="none" stroke="#d29922" stroke-width="3"></polyline><polyline points="${esc(checkpoint.chart && checkpoint.chart.model_points || '')}" fill="none" stroke="#0f766e" stroke-width="4"></polyline><line x1="${esc(markerX)}" x2="${esc(markerX)}" y1="14" y2="206" stroke="#d94841" stroke-dasharray="6 6"></line></svg></div>
+        </section>
+        <section class="rl-bottom" style="margin-top:18px;"><div class="rl-panel"><h3>Phân bổ mục tiêu của policy</h3><table class="rl-table"><thead><tr><th>Tài sản</th><th>Tỷ trọng mục tiêu</th></tr></thead><tbody>${htmlRows(frame.top_allocations || [], function(row) {{ return '<tr><td>'+esc(row.label)+'</td><td>'+num(row.weight_pct,2)+'%</td></tr>'; }}, '<tr><td colspan="2">Không có dữ liệu</td></tr>')}</tbody></table></div><div class="rl-panel"><h3>Vị thế thực tế sau khớp lệnh</h3><table class="rl-table"><thead><tr><th>Tài sản</th><th>Giá trị</th><th>Tỷ trọng</th></tr></thead><tbody>${htmlRows(frame.top_positions || [], function(row) {{ return '<tr><td>'+esc(row.label)+'</td><td>'+num(row.position_value,0)+'</td><td>'+num(row.weight_pct,2)+'%</td></tr>'; }}, '<tr><td colspan="3">Không có dữ liệu</td></tr>')}</tbody></table></div></section>
+        <section class="rl-panel"><h3>Giao dịch nổi bật trong ngày</h3><table class="rl-table"><thead><tr><th>Mã</th><th>Hướng</th><th>Số lượng</th><th>Giá mở</th><th>Giá đóng</th><th>Tỷ trọng mục tiêu</th></tr></thead><tbody>${htmlRows(frame.trade_rows || [], function(row) {{ return '<tr><td>'+esc(row.symbol)+'</td><td>'+esc(row.direction)+'</td><td>'+esc(row.shares)+'</td><td>'+num(row.execution_price,0)+'</td><td>'+num(row.close_price,0)+'</td><td>'+num(row.target_weight_pct,2)+'%</td></tr>'; }}, '<tr><td colspan="6">Không có giao dịch nổi bật.</td></tr>')}</tbody></table></section>
+      `;
+      document.getElementById('runSelect').onchange = function (e) {{ state.runIndex = Number(e.target.value || 0); render(); }};
+      document.getElementById('replayRunSelect').onchange = function (e) {{ state.replayRunIndex = Number(e.target.value || 0); state.checkpointIndex = 0; state.frameIndex = 0; stopTimer(); render(); }};
+      document.getElementById('checkpointSelect').onchange = function (e) {{ state.checkpointIndex = Number(e.target.value || 0); state.frameIndex = 0; stopTimer(); render(); }};
+      document.getElementById('frameSlider').oninput = function (e) {{ state.frameIndex = Number(e.target.value || 0); render(); }};
+      document.getElementById('speedSelect').onchange = function (e) {{ state.speedMs = Number(e.target.value || 220); if (state.playing) {{ stopTimer(); playTimer(); }} render(); }};
+      document.getElementById('btnStart').onclick = function () {{ state.frameIndex = 0; stopTimer(); render(); }};
+      document.getElementById('btnPrev').onclick = function () {{ state.frameIndex = Math.max(0, state.frameIndex - 1); stopTimer(); render(); }};
+      document.getElementById('btnNext').onclick = function () {{ state.frameIndex = Math.min(Math.max(frameList.length - 1, 0), state.frameIndex + 1); stopTimer(); render(); }};
+      document.getElementById('btnPlay').onclick = function () {{ if (state.playing) stopTimer(); else playTimer(); render(); }};
+    }}
+    render();
+  }})();
+  </script>
+</div>
+'''
+print(html)

@@ -40,7 +40,7 @@ fee_rate: 0.001
 max_steps_train: 512
 max_steps_eval: 9999
 reward_scaling: 1.0
-reward_name: advanced
+reward_name: sharpe
 reward_window: 30
 trade_deadband: 0.04
 max_weight_change_per_step: 0.07
