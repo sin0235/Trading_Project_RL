@@ -222,7 +222,6 @@ class TradingEnv(gym.Env):
 
         "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "MultiDiscrete":
-            action = self._normalize_discrete_action(action)
             trade_amounts = decode_discrete_action(
                 action, self.n_stocks, self.min_shares, self.cash, self.holdings, execution_prices,
                 fee_rate=self.fee_rate,
@@ -347,32 +346,6 @@ class TradingEnv(gym.Env):
 
         return obs, float(reward), terminated, truncated, info
 
-    def _normalize_discrete_action(self, action) -> np.ndarray:
-        """
-        Chuan hoa action discrete ve dang vector per-stock:
-        - scalar int trong [0, k*n_stocks): chi tac dong len 1 ma, cac ma khac hold
-        - vector/list/ndarray do dai n_stocks: legacy mode
-        """
-        if np.isscalar(action):
-            action_idx = int(action)
-            if action_idx < 0 or action_idx >= self.k * self.n_stocks:
-                raise ValueError(
-                    f"Discrete action index {action_idx} out of range [0, {self.k * self.n_stocks - 1}]"
-                )
-            normalized = np.ones(self.n_stocks, dtype=np.int64)
-            stock_idx = action_idx // self.k
-            decision = action_idx % self.k
-            normalized[stock_idx] = decision
-            return normalized
-
-        normalized = np.asarray(action, dtype=np.int64)
-        if normalized.shape != (self.n_stocks,):
-            raise ValueError(
-                f"Discrete action shape {normalized.shape} != ({self.n_stocks},)"
-            )
-        if np.any((normalized < 0) | (normalized >= self.k)):
-            raise ValueError(f"Discrete action values must be in [0, {self.k - 1}]")
-        return normalized
 
     def _execute_trades(self, trade_amounts: np.ndarray,
                         prices: np.ndarray) -> float:
