@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.zeppelin_checkpoint_replay_helpers import (
+    _ensure_replay_fallback_root,
     _candidate_vnstock_sources,
     _build_recent_dataset,
     _drawdown_pct_series,
@@ -15,14 +16,29 @@ from scripts.zeppelin_checkpoint_replay_helpers import (
     select_replay_checkpoints_best_and_second,
 )
 
+TEST_TMP_ROOT = (Path(__file__).resolve().parents[1] / ".pytest_tmp").resolve()
+TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+
 
 class ZeppelinCheckpointReplayHelperTests(unittest.TestCase):
     def test_candidate_vnstock_sources_keeps_primary_then_online_fallbacks(self):
-        self.assertEqual(_candidate_vnstock_sources("VCI"), ["VCI", "TCBS", "KBS"])
-        self.assertEqual(_candidate_vnstock_sources("TCBS"), ["TCBS", "VCI", "KBS"])
+        self.assertEqual(_candidate_vnstock_sources("VCI"), ["VCI", "KBS", "MSN", "FMP"])
+        self.assertEqual(_candidate_vnstock_sources("KBS"), ["KBS", "VCI", "MSN", "FMP"])
+
+    def test_ensure_replay_fallback_root_seeds_from_first_available_data_root(self):
+        with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT) as tmpdir:
+            project_root = Path(tmpdir) / "project-demo"
+            processed_v2 = project_root / "data" / "processed_v2"
+            processed_v2.mkdir(parents=True)
+            (processed_v2 / "ACB.csv").write_text("time,open,high,low,close,volume\n2025-01-02,1,1,1,1,100\n", encoding="utf-8")
+
+            fallback_root = _ensure_replay_fallback_root(project_root, [processed_v2])
+
+            self.assertEqual(fallback_root, (project_root / "data" / "replay_fallback").resolve())
+            self.assertTrue((fallback_root / "ACB.csv").exists())
 
     def test_select_replay_checkpoints_keeps_progression_and_special_models(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT) as tmpdir:
             run_dir = Path(tmpdir) / "ppo_run"
             ckpt_dir = run_dir / "checkpoints"
             ckpt_dir.mkdir(parents=True)
@@ -52,7 +68,7 @@ class ZeppelinCheckpointReplayHelperTests(unittest.TestCase):
         self.assertEqual(str(dates[start_t + 1].date()), "2026-03-02")
 
     def test_select_replay_checkpoints_best_and_second_prefers_best_then_second_numeric(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=TEST_TMP_ROOT) as tmpdir:
             run_dir = Path(tmpdir) / "ppo_run"
             ckpt_dir = run_dir / "checkpoints"
             ckpt_dir.mkdir(parents=True)

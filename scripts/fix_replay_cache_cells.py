@@ -29,8 +29,11 @@ CHECKPOINT_SAMPLES = to_int(z.input("checkpoint_samples", "6"), 6)
 VNSTOCK_SOURCE = z.input("vnstock_source", "VCI").strip() or "VCI"
 REPLAY_END_DATE = str(z.input("replay_end_date", "2026-02-28") or "2026-02-28").strip() or "2026-02-28"
 REFRESH_REPLAY_CACHE = str(z.input("refresh_replay_cache", "false")).strip().lower() in ("true", "1", "yes", "y")
+REPLAY_CACHE_SCHEMA_VERSION = 2
 def replay_needs_rebuild(payload):
     if not isinstance(payload, dict):
+        return True
+    if int(payload.get("schema_version") or 0) != REPLAY_CACHE_SCHEMA_VERSION:
         return True
     status = str(payload.get("status") or "").strip().lower()
     if status in ("error", "empty", "pending"):
@@ -93,9 +96,15 @@ if ENABLE_CHECKPOINT_REPLAY:
                 sys.path.insert(0, resolved_project_root)
             import src.constants as constants_module
             import src.data.download_data as download_data_module
+            import src.training.PPO as ppo_module
+            import src.training.DDQ as ddq_module
+            import scripts.dashboard_paths as dashboard_paths_module
             import scripts.zeppelin_checkpoint_replay_helpers as replay_module
             importlib.reload(constants_module)
             importlib.reload(download_data_module)
+            importlib.reload(ppo_module)
+            importlib.reload(ddq_module)
+            importlib.reload(dashboard_paths_module)
             replay_module = importlib.reload(replay_module)
             build_checkpoint_replay_payload = replay_module.build_checkpoint_replay_payload
             replay_payload = build_checkpoint_replay_payload(
@@ -166,6 +175,8 @@ def to_int(value, default):
 def replay_needs_rebuild(payload):
     if not isinstance(payload, dict):
         return True
+    if int(payload.get("schema_version") or 0) != REPLAY_CACHE_SCHEMA_VERSION:
+        return True
     status = str(payload.get("status") or "").strip().lower()
     if status in ("error", "empty", "pending"):
         return True
@@ -203,6 +214,7 @@ checkpoint_samples = to_int(z.input("checkpoint_samples", "6"), 6)
 vnstock_source = str(z.input("vnstock_source", "VCI") or "VCI").strip() or "VCI"
 replay_end_date = str(z.input("replay_end_date", "2026-02-28") or "2026-02-28").strip() or "2026-02-28"
 refresh_replay_cache = str(z.input("refresh_replay_cache", "false")).strip().lower() in ("true", "1", "yes", "y")
+REPLAY_CACHE_SCHEMA_VERSION = 2
 
 paths = DashboardProjectPaths.from_project_root(project_root)
 paths.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -223,9 +235,15 @@ if enable_checkpoint_replay and (refresh_replay_cache or not replay_cache_matche
             sys.path.insert(0, resolved_project_root)
         import src.constants as constants_module
         import src.data.download_data as download_data_module
+        import src.training.PPO as ppo_module
+        import src.training.DDQ as ddq_module
+        import scripts.dashboard_paths as dashboard_paths_module
         import scripts.zeppelin_checkpoint_replay_helpers as replay_module
         importlib.reload(constants_module)
         importlib.reload(download_data_module)
+        importlib.reload(ppo_module)
+        importlib.reload(ddq_module)
+        importlib.reload(dashboard_paths_module)
         replay_module = importlib.reload(replay_module)
         replay_payload = replay_module.build_checkpoint_replay_payload(
             project_root=resolved_project_root,
@@ -293,8 +311,15 @@ def patch_note(path: Path) -> None:
         title = str(paragraph.get("title") or "").strip()
         if title == "Build Replay Cache":
             paragraph["text"] = BUILD_REPLAY_TEXT
+            paragraph["results"] = {"code": "SUCCESS", "msg": []}
+            paragraph["status"] = "READY"
         elif title == "Bind Dashboard Data":
             paragraph["text"] = BIND_TEXT
+            paragraph["results"] = {"code": "SUCCESS", "msg": []}
+            paragraph["status"] = "READY"
+        elif title == "HTML Dashboard":
+            paragraph["results"] = {"code": "SUCCESS", "msg": []}
+            paragraph["status"] = "READY"
     path.write_text(json.dumps(note, ensure_ascii=False, separators=(",", ":")), encoding="utf-8-sig")
 
 

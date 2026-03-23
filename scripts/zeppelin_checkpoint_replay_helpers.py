@@ -7,6 +7,7 @@ from datetime import datetime
 from importlib.util import find_spec
 import json
 from pathlib import Path
+import shutil
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,10 @@ from scripts.dashboard_paths import (
     FIXED_PPO_REPLAY_RUN_ID,
     DashboardProjectPaths,
 )
+
+REPLAY_PAYLOAD_SCHEMA_VERSION = 2
+MIN_COMMON_REPLAY_DAYS = 10
+FALLBACK_CACHE_SOURCE = "fallback-cache"
 
 
 def _results_root(project_root: str | Path, results_dir: str | Path | None = None) -> Path:
@@ -79,6 +84,63 @@ def _candidate_local_data_roots(
         add(paths.processed_v2_root)
 
     return candidates
+
+
+def _required_price_columns() -> tuple[str, ...]:
+    return ("time", "open", "high", "low", "close", "volume")
+
+
+def _frame_has_required_price_columns(frame: pd.DataFrame) -> bool:
+    return all(column in frame.columns for column in _required_price_columns())
+
+
+def _ensure_replay_fallback_root(project_root: str | Path, data_roots: list[Path]) -> Path | None:
+    paths = DashboardProjectPaths.from_project_root(project_root)
+    fallback_root = paths.replay_fallback_root
+    try:
+        fallback_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return fallback_root if fallback_root.exists() else None
+
+    try:
+        if any(fallback_root.iterdir()):
+            return fallback_root
+    except OSError:
+        return fallback_root
+
+    preferred_roots: list[Path] = []
+    for candidate in data_roots:
+        try:
+            resolved = Path(candidate).resolve()
+        except OSError:
+            continue
+        if resolved == fallback_root or not resolved.exists():
+            continue
+        preferred_roots.append(resolved)
+
+    def seed_priority(path: Path) -> tuple[int, str]:
+        if path == paths.processed_v2_root:
+            return (0, str(path))
+        if path == paths.processed_data_root:
+            return (1, str(path))
+        return (2, str(path))
+
+    preferred_roots.sort(key=seed_priority)
+    for source_root in preferred_roots:
+        copied = 0
+        for csv_path in sorted(source_root.glob("*.csv")):
+            target = fallback_root / csv_path.name
+            if target.exists():
+                continue
+            try:
+                shutil.copyfile(csv_path, target)
+                copied += 1
+            except OSError:
+                continue
+        if copied > 0:
+            break
+
+    return fallback_root
 
 
 def _load_json_mapping(path: Path) -> dict[str, Any]:
@@ -320,31 +382,132 @@ def _load_run_config_for_replay(run_dir: Path) -> dict[str, Any]:
         )
 
 
+def _dedupe_resolved_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        resolved = path.resolve()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(resolved)
+    return deduped
+
+
+def _compare_artifact_roots_for_checkpoint(project_root: str | Path, checkpoint_path: Path) -> list[Path]:
+    paths = DashboardProjectPaths.from_project_root(project_root)
+    roots: list[Path] = []
+    checkpoint_path = checkpoint_path.resolve()
+    if checkpoint_path.parent.name == "checkpoints":
+        roots.append(checkpoint_path.parent.parent)
+    roots.append(checkpoint_path.parent)
+    roots.extend(paths.ddq_compare_artifact_roots)
+    return _dedupe_resolved_paths(roots)
+
+
+def _detect_compare_artifact_agent(project_root: str | Path, checkpoint_path: Path) -> str:
+    for root in _compare_artifact_roots_for_checkpoint(project_root, checkpoint_path):
+        for candidate_name in ("config.json", "run_config.json", "summary.json"):
+            candidate = root / candidate_name
+            if not candidate.exists():
+                continue
+            try:
+                raw = _load_json_mapping(candidate)
+            except Exception:
+                continue
+            agent = str(raw.get("agent") or "").strip()
+            if agent:
+                return agent
+
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    state_dict = payload.get("model_state_dict")
+    if not isinstance(state_dict, dict):
+        return ""
+    if "advantage_stream.2.bias" in state_dict:
+        return "DDQ_LSTM"
+    if "actor_head.5.bias" in state_dict:
+        return "PPO_LSTM"
+    return ""
+
+
 def _load_ddq_compare_config(
     project_root: str | Path,
     checkpoint_path: Path,
     base_config: dict[str, Any],
-) -> tuple[dict[str, Any], str]:
-    paths = DashboardProjectPaths.from_project_root(project_root)
+) -> tuple[dict[str, Any], str, str, str]:
+    compare_agent = _detect_compare_artifact_agent(project_root, checkpoint_path).upper()
+    candidate_roots = _compare_artifact_roots_for_checkpoint(project_root, checkpoint_path)
 
-    for cfg_path in paths.ddq_config_json_candidates:
-        if not cfg_path.exists():
-            continue
-        try:
-            if cfg_path.name == "config.json":
-                return load_ddq_run_config(cfg_path.parent, overrides={"device": "cpu"}), "ddq_config_json"
-            raw_cfg = _load_json_mapping(cfg_path)
-            cfg = resolve_ddq_config(config={**base_config, **raw_cfg, "device": "cpu"})
-            return cfg, cfg_path.name
-        except Exception:
-            continue
+    if "DDQ" in compare_agent:
+        for root in candidate_roots:
+            cfg_path = root / "config.json"
+            if cfg_path.exists():
+                try:
+                    return (
+                        load_ddq_run_config(cfg_path.parent, overrides={"device": "cpu"}),
+                        "ddq_config_json",
+                        "ddq",
+                        DDQ_COMPARE_LABEL,
+                    )
+                except Exception:
+                    pass
 
-    cfg = infer_ddq_run_config_from_checkpoint(
+            for candidate_name in ("run_config.json", "summary.json"):
+                cfg_path = root / candidate_name
+                if not cfg_path.exists():
+                    continue
+                try:
+                    raw_cfg = _load_json_mapping(cfg_path)
+                    cfg = resolve_ddq_config(config={**base_config, **raw_cfg, "device": "cpu"})
+                    return cfg, candidate_name, "ddq", DDQ_COMPARE_LABEL
+                except Exception:
+                    continue
+
+        cfg = infer_ddq_run_config_from_checkpoint(
+            checkpoint_path,
+            base_config={**base_config, "device": "cpu"},
+            overrides={"device": "cpu"},
+        )
+        return cfg, "checkpoint_inferred", "ddq", DDQ_COMPARE_LABEL
+
+    for root in candidate_roots:
+        cfg_path = root / "config.json"
+        if cfg_path.exists():
+            try:
+                return (
+                    load_run_config(cfg_path.parent, overrides={"device": "cpu"}),
+                    "ppo_config_json",
+                    "ppo",
+                    "PPO cố định",
+                )
+            except Exception:
+                pass
+
+        for candidate_name in ("run_config.json", "summary.json"):
+            cfg_path = root / candidate_name
+            if not cfg_path.exists():
+                continue
+            try:
+                raw_cfg = _load_json_mapping(cfg_path)
+                cfg = {**DEFAULT_CONFIG, **raw_cfg, "device": "cpu"}
+                return (
+                    load_run_config(root, overrides={"device": "cpu"})
+                    if candidate_name == "run_config.json"
+                    else cfg,
+                    candidate_name,
+                    "ppo",
+                    "PPO cố định",
+                )
+            except Exception:
+                continue
+
+    cfg = infer_run_config_from_checkpoint(
         checkpoint_path,
         base_config={**base_config, "device": "cpu"},
         overrides={"device": "cpu"},
     )
-    return cfg, "checkpoint_inferred"
+    return cfg, "checkpoint_inferred", "ppo", "PPO cố định"
 
 
 def _normalize_weights(action: np.ndarray) -> np.ndarray:
@@ -457,6 +620,56 @@ def _load_local_processed_data(
     raise FileNotFoundError(" | ".join(problems) if problems else "Không tìm thấy dữ liệu cục bộ phù hợp.")
 
 
+def _load_fallback_frame(fallback_root: Path | None, ticker: str) -> pd.DataFrame | None:
+    if fallback_root is None:
+        return None
+
+    path = fallback_root / f"{str(ticker).upper()}.csv"
+    if not path.exists():
+        return None
+
+    try:
+        frame = pd.read_csv(path, parse_dates=["time"])
+    except Exception:
+        return None
+    if frame.empty or not _frame_has_required_price_columns(frame):
+        return None
+
+    frame["symbol"] = str(ticker).upper()
+    return frame.sort_values("time").reset_index(drop=True)
+
+
+def _save_fallback_frames(fallback_root: Path | None, frames: dict[str, pd.DataFrame]) -> None:
+    if fallback_root is None:
+        return
+
+    try:
+        fallback_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    for ticker, frame in frames.items():
+        if not isinstance(frame, pd.DataFrame) or frame.empty or not _frame_has_required_price_columns(frame):
+            continue
+        current = frame.copy()
+        current["symbol"] = str(ticker).upper()
+        target = fallback_root / f"{str(ticker).upper()}.csv"
+        if target.exists():
+            try:
+                existing = pd.read_csv(target, parse_dates=["time"])
+                merged = pd.concat([existing, current], ignore_index=True, sort=False)
+                merged["time"] = pd.to_datetime(merged["time"], errors="coerce")
+                merged = merged.dropna(subset=["time"]).sort_values("time")
+                merged = merged.drop_duplicates(subset="time", keep="last").reset_index(drop=True)
+                if _frame_has_required_price_columns(merged):
+                    current = merged
+            except Exception:
+                pass
+        try:
+            current.to_csv(target, index=False)
+        except OSError:
+            continue
+
+
 def _process_downloaded_frames(
     raw_frames: list[pd.DataFrame],
     features: list[str],
@@ -477,10 +690,79 @@ def _process_downloaded_frames(
 def _candidate_vnstock_sources(source: str) -> list[str]:
     primary = str(source or "VCI").strip().upper() or "VCI"
     candidates = [primary]
-    for fallback in ("VCI", "TCBS", "KBS"):
+    for fallback in ("VCI", "KBS", "MSN", "FMP"):
         if fallback not in candidates:
             candidates.append(fallback)
     return candidates
+
+
+def _common_day_count(data_dict: dict[str, pd.DataFrame]) -> int:
+    if not data_dict:
+        return 0
+    return int(len(_common_dates(data_dict)))
+
+
+def _recover_common_window_with_fallback_cache(
+    processed_data: dict[str, pd.DataFrame],
+    requested_tickers: list[str],
+    features: list[str],
+    fallback_root: Path | None,
+    ticker_sources: dict[str, str],
+) -> tuple[dict[str, pd.DataFrame], dict[str, str], list[str]]:
+    if fallback_root is None:
+        return processed_data, ticker_sources, []
+
+    current = dict(processed_data)
+    current_common_days = _common_day_count(current)
+    if current_common_days >= MIN_COMMON_REPLAY_DAYS:
+        return current, ticker_sources, []
+
+    fallback_candidates: dict[str, pd.DataFrame] = {}
+    for ticker in requested_tickers:
+        frame = _load_fallback_frame(fallback_root, ticker)
+        if frame is None:
+            continue
+        try:
+            processed = _process_downloaded_frames([frame], features)
+        except BaseException:
+            continue
+        candidate = processed.get(str(ticker).upper())
+        if candidate is not None and not candidate.empty:
+            fallback_candidates[str(ticker).upper()] = candidate
+
+    notes: list[str] = []
+    while current_common_days < MIN_COMMON_REPLAY_DAYS:
+        best_ticker: str | None = None
+        best_frame: pd.DataFrame | None = None
+        best_common_days = current_common_days
+
+        for ticker in requested_tickers:
+            symbol = str(ticker).upper()
+            candidate = fallback_candidates.get(symbol)
+            if candidate is None:
+                continue
+            if str(ticker_sources.get(symbol) or "").strip().lower() == FALLBACK_CACHE_SOURCE:
+                continue
+
+            trial = dict(current)
+            trial[symbol] = candidate
+            common_days = _common_day_count(trial)
+            if common_days > best_common_days:
+                best_ticker = symbol
+                best_frame = candidate
+                best_common_days = common_days
+
+        if best_ticker is None or best_frame is None:
+            break
+
+        current[best_ticker] = best_frame
+        ticker_sources[best_ticker] = FALLBACK_CACHE_SOURCE
+        notes.append(
+            f"Đã thay dữ liệu replay của {best_ticker} bằng cache fallback để giữ {best_common_days} ngày giao dịch chung."
+        )
+        current_common_days = best_common_days
+
+    return current, ticker_sources, notes
 
 
 def _download_recent_processed_data(
@@ -489,7 +771,8 @@ def _download_recent_processed_data(
     start_date: str,
     end_date: str,
     source: str,
-) -> tuple[dict[str, pd.DataFrame], list[str], dict[str, str]]:
+    fallback_root: Path | None = None,
+) -> tuple[dict[str, pd.DataFrame], list[str], dict[str, str], list[str]]:
     requested_tickers = [str(ticker).upper() for ticker in tickers]
     remaining = list(requested_tickers)
     collected: dict[str, pd.DataFrame] = {}
@@ -515,6 +798,7 @@ def _download_recent_processed_data(
 
         if downloader.data:
             used_sources.append(candidate_source)
+            _save_fallback_frames(fallback_root, downloader.data)
             for ticker, frame in downloader.data.items():
                 symbol = str(ticker).upper()
                 collected[symbol] = frame
@@ -524,12 +808,34 @@ def _download_recent_processed_data(
         if remaining:
             problems.append(f"{candidate_source}: thiếu {remaining}")
 
+    recovered_from_cache: list[str] = []
+    if remaining and fallback_root is not None:
+        for ticker in list(remaining):
+            frame = _load_fallback_frame(fallback_root, ticker)
+            if frame is None:
+                continue
+            collected[ticker] = frame
+            ticker_sources[ticker] = FALLBACK_CACHE_SOURCE
+            recovered_from_cache.append(ticker)
+
+        if recovered_from_cache:
+            remaining = [ticker for ticker in remaining if ticker not in recovered_from_cache]
+            problems.append(f"{FALLBACK_CACHE_SOURCE}: bù {recovered_from_cache}")
+
     if remaining:
         joined = " | ".join(problems) if problems else f"thiếu {remaining}"
         raise RuntimeError(f"Tải vnstock chưa đủ mã sau khi thử nhiều source: {joined}")
 
     raw_frames = [collected[ticker] for ticker in requested_tickers]
-    return _process_downloaded_frames(raw_frames, features), used_sources, ticker_sources
+    processed = _process_downloaded_frames(raw_frames, features)
+    processed, ticker_sources, recovery_notes = _recover_common_window_with_fallback_cache(
+        processed_data=processed,
+        requested_tickers=requested_tickers,
+        features=features,
+        fallback_root=fallback_root,
+        ticker_sources=ticker_sources,
+    )
+    return processed, used_sources, ticker_sources, recovery_notes
 
 
 def _vnstock_available() -> bool:
@@ -565,26 +871,31 @@ def _build_recent_dataset(
     requested_buffer_days = max(effective_recent_months + warmup_months, 2) * 31
     fetch_start = today - pd.Timedelta(days=max((effective_recent_months * 31) + feature_buffer_days, requested_buffer_days))
     warnings: list[str] = []
-
     requested_source = str(vnstock_source or "VCI").strip()
     if requested_source.lower() == "local":
         raise RuntimeError("Replay demo hiện chỉ hỗ trợ dữ liệu mới từ vnstock. Không còn fallback sang dữ liệu cục bộ.")
     if not _vnstock_available():
         raise RuntimeError("Môi trường Zeppelin chưa có module vnstock, nên không thể dựng replay từ dữ liệu mới.")
+    fallback_root = _ensure_replay_fallback_root(project_root, data_roots)
 
     try:
-        recent_data, used_sources, ticker_sources = _download_recent_processed_data(
+        recent_data, used_sources, ticker_sources, recovery_notes = _download_recent_processed_data(
             tickers=tickers,
             features=features,
             start_date=_as_date_str(fetch_start),
             end_date=_as_date_str(today),
             source=requested_source,
+            fallback_root=fallback_root,
         )
+        warnings.extend(recovery_notes)
         source_name = "vnstock"
-        source_label = f"vnstock ({' + '.join(used_sources)})" if used_sources else f"vnstock ({requested_source})"
+        source_tokens = list(used_sources)
+        if any(str(value).strip().lower() == FALLBACK_CACHE_SOURCE for value in ticker_sources.values()):
+            source_tokens.append(FALLBACK_CACHE_SOURCE)
+        source_label = f"vnstock ({' + '.join(source_tokens)})" if source_tokens else f"vnstock ({requested_source})"
         if len(set(ticker_sources.values())) > 1:
             warnings.append(
-                "Một số mã không có đủ dữ liệu ở source chính, đã tự thử source online khác: "
+                "Một số mã không có đủ dữ liệu ở source chính, đã tự thử source/cache khác: "
                 + ", ".join(f"{ticker}:{ticker_sources[ticker]}" for ticker in sorted(ticker_sources))
             )
     except BaseException as exc:
@@ -923,6 +1234,29 @@ def _run_ddq_episode_values_only(
     return values
 
 
+def _run_ppo_episode_values_only(
+    env: TradingEnv,
+    model: PPOLSTMActorCritic,
+    start_t: int,
+) -> list[float]:
+    obs, _ = env.reset(options={"start_t": start_t})
+    values: list[float] = []
+    done = False
+
+    while not done:
+        market_state, portfolio_state = env.state_space.flat_obs_to_sequential(obs)
+        market_tensor = torch.tensor(market_state, dtype=torch.float32).unsqueeze(0)
+        portfolio_tensor = torch.tensor(portfolio_state, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            concentration, _value, _hidden = model.forward(market_tensor, portfolio_tensor, hidden=None)
+        action = _normalize_weights(concentration.squeeze(0).cpu().numpy())
+        obs, _reward, terminated, truncated, _info = env.step(action)
+        done = bool(terminated or truncated)
+        values.append(float(env.portfolio_value))
+
+    return values
+
+
 def _series_summary(values: list[float], initial_balance: float) -> dict[str, Any]:
     if not values:
         return {
@@ -1046,7 +1380,7 @@ def _build_ddq_compare_overlay(
     if checkpoint_path is None:
         return None
 
-    ddq_config, config_source = _load_ddq_compare_config(
+    ddq_config, config_source, compare_kind, compare_label = _load_ddq_compare_config(
         project_root=project_root,
         checkpoint_path=checkpoint_path,
         base_config=base_config,
@@ -1066,28 +1400,44 @@ def _build_ddq_compare_overlay(
             f"{sorted(set(missing_features))}"
         )
 
-    ddq_model = _build_ddq_model(ddq_config, checkpoint_path)
-    ddq_env = _make_eval_env_discrete(ddq_config, dataset.data_dict)
-    start_t = find_replay_start_t(
-        dates=ddq_env.state_space.dates,
-        display_start=dataset.display_start,
-        window_size=int(ddq_config["window_size"]),
-        max_start_t=int(ddq_env.max_t - ddq_env.max_steps),
-    )
-    values = _run_ddq_episode_values_only(
-        env=ddq_env,
-        model=ddq_model,
-        start_t=start_t,
-    )
+    if compare_kind == "ddq":
+        compare_model = _build_ddq_model(ddq_config, checkpoint_path)
+        compare_env = _make_eval_env_discrete(ddq_config, dataset.data_dict)
+        start_t = find_replay_start_t(
+            dates=compare_env.state_space.dates,
+            display_start=dataset.display_start,
+            window_size=int(ddq_config["window_size"]),
+            max_start_t=int(compare_env.max_t - compare_env.max_steps),
+        )
+        values = _run_ddq_episode_values_only(
+            env=compare_env,
+            model=compare_model,
+            start_t=start_t,
+        )
+    else:
+        compare_model = _build_model(ddq_config, checkpoint_path)
+        compare_env = _make_eval_env(ddq_config, dataset.data_dict)
+        start_t = find_replay_start_t(
+            dates=compare_env.state_space.dates,
+            display_start=dataset.display_start,
+            window_size=int(ddq_config["window_size"]),
+            max_start_t=int(compare_env.max_t - compare_env.max_steps),
+        )
+        values = _run_ppo_episode_values_only(
+            env=compare_env,
+            model=compare_model,
+            start_t=start_t,
+        )
 
     keep_from = max(int(dataset.n_days) - len(values), 0) if len(values) > dataset.n_days else 0
     values = values[keep_from:]
 
     return {
         "checkpoint_id": "ddq_best",
-        "label": DDQ_COMPARE_LABEL,
+        "label": compare_label,
         "checkpoint_path": str(checkpoint_path),
         "config_source": config_source,
+        "agent": compare_kind,
         "values": values,
     }
 
@@ -1543,6 +1893,7 @@ def build_checkpoint_replay_payload(
 
     if not replay_runs:
         return {
+            "schema_version": REPLAY_PAYLOAD_SCHEMA_VERSION,
             "status": "empty",
             "message": "Không dựng được payload replay từ các run hiện có.",
             "warnings": warnings,
@@ -1553,6 +1904,7 @@ def build_checkpoint_replay_payload(
 
     default_run = replay_runs[0]
     return {
+        "schema_version": REPLAY_PAYLOAD_SCHEMA_VERSION,
         "status": "ready",
         "message": "Đã dựng payload replay checkpoint theo ngày.",
         "warnings": warnings,
