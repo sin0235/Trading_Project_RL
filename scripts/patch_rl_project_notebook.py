@@ -357,7 +357,7 @@ def patch_build_replay(text: str) -> str:
     updated = text
     updated = updated.replace(
         'REPLAY_MONTHS = to_int(z.input("replay_months", "4"), 4)',
-        'REPLAY_MONTHS = to_int(z.input("replay_months", "7"), 7)',
+        'REPLAY_MONTHS = to_int(z.input("replay_months", "12"), 12)',
     )
     updated = updated.replace(
         'REPLAY_WARMUP_MONTHS = to_int(z.input("replay_warmup_months", "4"), 4)',

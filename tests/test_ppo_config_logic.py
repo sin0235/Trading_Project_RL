@@ -7,10 +7,13 @@ from pathlib import Path
 from src.models.lstm import PPOLSTMActorCritic
 from src.training.PPO import (
     DEFAULT_CONFIG,
+    compute_rollout_steps_to_next_milestone,
     compute_learning_rate,
     get_results_root_candidates,
     infer_run_config_from_checkpoint,
     load_ppo_config,
+    normalize_checkpoint_milestones,
+    next_checkpoint_milestone,
     resolve_eval_run_across_roots,
     resolve_eval_run,
     resolve_eval_checkpoint,
@@ -103,6 +106,47 @@ class PPOConfigLogicTests(unittest.TestCase):
             resolve_ppo_config(config={"trade_deadband": -0.01})
         with self.assertRaisesRegex(ValueError, "max_weight_change_per_step"):
             resolve_ppo_config(config={"max_weight_change_per_step": 0.0})
+
+    def test_resolve_ppo_config_normalizes_milestone_checkpoint_steps(self):
+        cfg = resolve_ppo_config(
+            config={
+                "total_timesteps": 500,
+                "milestone_checkpoint_steps": [100, "200", 100, 999, 300.0],
+            }
+        )
+
+        self.assertEqual(cfg["milestone_checkpoint_steps"], [100, 200, 300])
+
+    def test_normalize_checkpoint_milestones_rejects_invalid_values(self):
+        with self.assertRaisesRegex(ValueError, "số nguyên dương"):
+            normalize_checkpoint_milestones([100.5], total_timesteps=1_000)
+        with self.assertRaisesRegex(ValueError, "không hợp lệ"):
+            normalize_checkpoint_milestones(["abc"], total_timesteps=1_000)
+
+    def test_compute_rollout_steps_to_next_milestone_splits_early_rollout(self):
+        milestones = [100, 1_000, 5_000]
+
+        self.assertEqual(next_checkpoint_milestone(0, milestones), 100)
+        self.assertEqual(
+            compute_rollout_steps_to_next_milestone(
+                current_step=0,
+                total_timesteps=10_000,
+                n_steps=2_048,
+                milestone_steps=milestones,
+                saved_steps=set(),
+            ),
+            100,
+        )
+        self.assertEqual(
+            compute_rollout_steps_to_next_milestone(
+                current_step=3_048,
+                total_timesteps=10_000,
+                n_steps=2_048,
+                milestone_steps=milestones,
+                saved_steps={100, 1_000},
+            ),
+            1_952,
+        )
 
     def test_resolve_eval_checkpoint_prefers_best_then_final_then_latest_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmpdir:

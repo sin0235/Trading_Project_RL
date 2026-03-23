@@ -32,6 +32,7 @@ from src.training.PPO import (
     compute_learning_rate,
     evaluate_baselines,
     format_baseline_comparison,
+    normalize_checkpoint_milestones,
     set_seed,
 )
 from src.utils.data_splitter import load_data, split_by_ratio
@@ -81,6 +82,7 @@ DEFAULT_CONFIG = {
 
     "eval_freq": 10_000,
     "save_freq": 20_000,
+    "milestone_checkpoint_steps": [100],
     "n_eval_episodes": 1,
 
     "seed": 42,
@@ -442,6 +444,10 @@ def resolve_ddq_config(
         raise ValueError("total_timesteps phải > 0.")
     if resolved["epsilon_decay_steps"] < 0:
         raise ValueError("epsilon_decay_steps phải >= 0.")
+    resolved["milestone_checkpoint_steps"] = normalize_checkpoint_milestones(
+        resolved.get("milestone_checkpoint_steps"),
+        total_timesteps=resolved["total_timesteps"],
+    )
 
     return resolved
 
@@ -541,9 +547,25 @@ def train_ddq(config: dict | None = None, config_path: str | os.PathLike | None 
         f"LR schedule: {cfg['lr_schedule']} | "
         f"base_lr={cfg['learning_rate']:.2e} | min_lr={cfg['min_learning_rate']:.2e}"
     )
+    if cfg["milestone_checkpoint_steps"]:
+        logger.info(f"Milestone checkpoints: {cfg['milestone_checkpoint_steps']}")
+        if min(cfg["milestone_checkpoint_steps"]) < cfg["learning_starts"]:
+            logger.info(
+                "Milestone trước learning_starts sẽ phản ánh model gần như chưa học."
+            )
 
     save_dir = logger.get_run_dir() / "checkpoints"
     save_dir.mkdir(parents=True, exist_ok=True)
+    saved_checkpoint_steps: set[int] = set()
+
+    def save_step_checkpoint(step: int, reason: str) -> bool:
+        step = int(step)
+        if step <= 0 or step in saved_checkpoint_steps:
+            return False
+        agent.save(str(save_dir / f"checkpoint_{step}.pt"))
+        saved_checkpoint_steps.add(step)
+        logger.info(f"Saved checkpoint_{step}.pt ({reason})")
+        return True
 
     obs, _ = train_env.reset(seed=cfg["seed"])
     episode_reward = 0.0
@@ -604,6 +626,9 @@ def train_ddq(config: dict | None = None, config_path: str | os.PathLike | None 
         else:
             obs = next_obs
 
+        if step in cfg["milestone_checkpoint_steps"]:
+            save_step_checkpoint(step, "milestone_checkpoint")
+
         if step % cfg["eval_freq"] == 0:
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
             val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
@@ -624,7 +649,7 @@ def train_ddq(config: dict | None = None, config_path: str | os.PathLike | None 
                 logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
 
         if step % cfg["save_freq"] == 0:
-            agent.save(str(save_dir / f"checkpoint_{step}.pt"))
+            save_step_checkpoint(step, "periodic_checkpoint")
 
     best_path = save_dir / "best_model.pt"
     if best_path.exists():

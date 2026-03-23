@@ -17,6 +17,7 @@ import sys
 import math
 import json
 import random
+from collections.abc import Iterable
 import numpy as np
 import torch
 from pathlib import Path
@@ -79,6 +80,7 @@ DEFAULT_CONFIG = {
     "min_learning_rate": 1e-5,
     "eval_freq": 5,
     "save_freq": 5,
+    "milestone_checkpoint_steps": [100],
     "n_eval_episodes": 1,
 
     # --- Misc ---
@@ -171,6 +173,10 @@ def resolve_ppo_config(config: dict | None = None,
         raise ValueError("max_weight_change_per_step phải trong khoảng (0, 1].")
     if resolved["total_timesteps"] <= 0:
         raise ValueError("total_timesteps phải > 0.")
+    resolved["milestone_checkpoint_steps"] = normalize_checkpoint_milestones(
+        resolved.get("milestone_checkpoint_steps"),
+        total_timesteps=resolved["total_timesteps"],
+    )
 
     return resolved
 
@@ -194,6 +200,98 @@ def compute_learning_rate(
         return float(min_lr + (base_lr - min_lr) * cosine_decay)
 
     raise ValueError(f"Unsupported lr_schedule: {schedule}")
+
+
+def normalize_checkpoint_milestones(
+    raw_steps,
+    total_timesteps: int | None = None,
+) -> list[int]:
+    if raw_steps is None:
+        return []
+
+    if isinstance(raw_steps, (str, bytes, int, float, np.integer, np.floating)):
+        values = [raw_steps]
+    elif isinstance(raw_steps, Iterable):
+        values = list(raw_steps)
+    else:
+        raise ValueError("milestone_checkpoint_steps phải là số nguyên hoặc danh sách số nguyên.")
+
+    normalized: list[int] = []
+    max_steps = int(total_timesteps) if total_timesteps is not None else None
+
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError("milestone_checkpoint_steps không được chứa giá trị boolean.")
+
+        if isinstance(value, str):
+            cleaned = value.strip().replace("_", "")
+            if not cleaned:
+                continue
+            try:
+                step = int(cleaned)
+            except ValueError as exc:
+                raise ValueError(
+                    f"milestone_checkpoint_steps chứa giá trị không hợp lệ: {value!r}"
+                ) from exc
+        elif isinstance(value, (int, np.integer)):
+            step = int(value)
+        elif isinstance(value, (float, np.floating)):
+            if not float(value).is_integer():
+                raise ValueError(
+                    f"milestone_checkpoint_steps phải là số nguyên dương, nhận được {value!r}"
+                )
+            step = int(value)
+        else:
+            raise ValueError(
+                f"milestone_checkpoint_steps chứa kiểu không hỗ trợ: {type(value).__name__}"
+            )
+
+        if step <= 0:
+            raise ValueError("milestone_checkpoint_steps phải chứa các mốc > 0.")
+        if max_steps is not None and step > max_steps:
+            continue
+        normalized.append(step)
+
+    return sorted(set(normalized))
+
+
+def next_checkpoint_milestone(
+    current_step: int,
+    milestone_steps: list[int],
+    saved_steps: set[int] | None = None,
+) -> int | None:
+    saved = saved_steps or set()
+    for milestone in milestone_steps:
+        if milestone > current_step and milestone not in saved:
+            return milestone
+    return None
+
+
+def compute_rollout_steps_to_next_milestone(
+    current_step: int,
+    total_timesteps: int,
+    n_steps: int,
+    milestone_steps: list[int],
+    saved_steps: set[int] | None = None,
+) -> int:
+    remaining_steps = int(total_timesteps) - int(current_step)
+    if remaining_steps <= 0:
+        return 0
+
+    rollout_steps = min(int(n_steps), remaining_steps)
+    milestone = next_checkpoint_milestone(
+        current_step=int(current_step),
+        milestone_steps=milestone_steps,
+        saved_steps=saved_steps,
+    )
+    if milestone is None:
+        return rollout_steps
+
+    steps_until_milestone = int(milestone) - int(current_step)
+    if steps_until_milestone <= 0:
+        return rollout_steps
+
+    return min(rollout_steps, steps_until_milestone)
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -654,25 +752,43 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         f"LR schedule: {cfg['lr_schedule']} | "
         f"base_lr={cfg['learning_rate']:.2e} | min_lr={cfg['min_learning_rate']:.2e}"
     )
+    if cfg["milestone_checkpoint_steps"]:
+        logger.info(f"Milestone checkpoints: {cfg['milestone_checkpoint_steps']}")
 
     # ----------------------------------------------------------------
     # 5. Training loop
     # ----------------------------------------------------------------
-    n_rollouts = max(1, math.ceil(cfg["total_timesteps"] / cfg["n_steps"]))
     episode_counter = 0
     best_val_sharpe = -np.inf
     obs = None
     latest_val_baselines = None
+    rollout = 0
 
     save_dir = logger.get_run_dir() / "checkpoints"
     save_dir.mkdir(parents=True, exist_ok=True)
     train_reset_seed = cfg["seed"]
+    saved_checkpoint_steps: set[int] = set()
 
-    for rollout in range(1, n_rollouts + 1):
-        remaining_steps = cfg["total_timesteps"] - agent.total_steps
-        if remaining_steps <= 0:
+    def save_step_checkpoint(step: int, reason: str) -> bool:
+        step = int(step)
+        if step <= 0 or step in saved_checkpoint_steps:
+            return False
+        agent.save(str(save_dir / f"checkpoint_{step}.pt"))
+        saved_checkpoint_steps.add(step)
+        logger.info(f"Saved checkpoint_{step}.pt ({reason})")
+        return True
+
+    while agent.total_steps < cfg["total_timesteps"]:
+        rollout += 1
+        rollout_steps = compute_rollout_steps_to_next_milestone(
+            current_step=agent.total_steps,
+            total_timesteps=cfg["total_timesteps"],
+            n_steps=cfg["n_steps"],
+            milestone_steps=cfg["milestone_checkpoint_steps"],
+            saved_steps=saved_checkpoint_steps,
+        )
+        if rollout_steps <= 0:
             break
-        rollout_steps = min(cfg["n_steps"], remaining_steps)
 
         progress = agent.total_steps / cfg["total_timesteps"]
         agent.set_lr(
@@ -724,7 +840,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         # Periodic info
         if rollout % 5 == 0 or rollout == 1:
             logger.info(
-                f"[Rollout {rollout}/{n_rollouts}] "
+                f"[Rollout {rollout}] "
                 f"steps={agent.total_steps:,} | "
                 f"pi_loss={update_stats['policy_loss']:.5f} | "
                 f"v_loss={update_stats['value_loss']:.5f} | "
@@ -752,9 +868,12 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 agent.save(str(save_dir / "best_model.pt"))
                 logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
 
+        if agent.total_steps in cfg["milestone_checkpoint_steps"]:
+            save_step_checkpoint(agent.total_steps, "milestone_checkpoint")
+
         # Periodic checkpoint
         if rollout % cfg["save_freq"] == 0:
-            agent.save(str(save_dir / f"checkpoint_{agent.total_steps}.pt"))
+            save_step_checkpoint(agent.total_steps, "periodic_checkpoint")
 
     # ----------------------------------------------------------------
     # 6. Final eval on test set (load best model)

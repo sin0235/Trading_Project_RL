@@ -5,6 +5,11 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.zeppelin_checkpoint_replay_helpers import (
+    _candidate_vnstock_sources,
+    _build_recent_dataset,
+    _drawdown_pct_series,
+    _risk_summary,
+    _rolling_quality_series,
     find_replay_start_t,
     select_replay_checkpoints,
     select_replay_checkpoints_best_and_second,
@@ -12,6 +17,10 @@ from scripts.zeppelin_checkpoint_replay_helpers import (
 
 
 class ZeppelinCheckpointReplayHelperTests(unittest.TestCase):
+    def test_candidate_vnstock_sources_keeps_primary_then_online_fallbacks(self):
+        self.assertEqual(_candidate_vnstock_sources("VCI"), ["VCI", "TCBS", "KBS"])
+        self.assertEqual(_candidate_vnstock_sources("TCBS"), ["TCBS", "VCI", "KBS"])
+
     def test_select_replay_checkpoints_keeps_progression_and_special_models(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir) / "ppo_run"
@@ -68,6 +77,44 @@ class ZeppelinCheckpointReplayHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(start_t, 29)
+
+    def test_drawdown_and_rolling_quality_series_align_with_values(self):
+        values = [100.0, 110.0, 105.0, 120.0, 114.0]
+
+        drawdown = _drawdown_pct_series(values, initial_balance=100.0)
+        rolling_sharpe, rolling_sortino = _rolling_quality_series(values, initial_balance=100.0, window=3)
+
+        self.assertEqual(len(drawdown), len(values))
+        self.assertEqual(len(rolling_sharpe), len(values))
+        self.assertEqual(len(rolling_sortino), len(values))
+        self.assertAlmostEqual(drawdown[0], 0.0, places=4)
+        self.assertLess(drawdown[2], 0.0)
+
+    def test_risk_summary_exposes_core_dashboard_metrics(self):
+        values = [100.0, 104.0, 101.0, 108.0, 112.0, 109.0]
+
+        summary = _risk_summary(values, initial_balance=100.0)
+
+        self.assertIn("sharpe_ratio", summary)
+        self.assertIn("sortino_ratio", summary)
+        self.assertIn("calmar_ratio", summary)
+        self.assertIn("max_drawdown_pct", summary)
+        self.assertIn("profit_factor", summary)
+        self.assertIn("win_rate_pct", summary)
+
+    def test_build_recent_dataset_rejects_local_source_for_demo(self):
+        with self.assertRaisesRegex(RuntimeError, "Không còn fallback sang dữ liệu cục bộ"):
+            _build_recent_dataset(
+                project_root="d:/HCMUTE/RL/Project",
+                tickers=["FPT"],
+                features=["close"],
+                window_size=60,
+                data_roots=[],
+                recent_months=12,
+                warmup_months=4,
+                vnstock_source="local",
+                end_date="2026-02-28",
+            )
 
 
 if __name__ == "__main__":

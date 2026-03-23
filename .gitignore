@@ -39,3 +39,6 @@ __pycache__/
 results/runs/*
 *.pt:Zone.Identifier
 *:Zone.Identifier
+.zeppelin_cache/
+*.html
+*.txt
