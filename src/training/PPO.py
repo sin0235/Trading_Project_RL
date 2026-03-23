@@ -46,19 +46,20 @@ DEFAULT_CONFIG = {
     # --- Environment ---
     "initial_balance": 1_000_000_000,
     "fee_rate": 0.001,
-    "max_steps_train": 512,
+    "max_steps_train": 756,
     "max_steps_eval": 9999,
     "reward_scaling": 1.0,
     "reward_name": "sharpe",
     "reward_window": 30,
-    "trade_deadband": 0.04,
-    "max_weight_change_per_step": 0.07,
+    "trade_deadband": 0.01,
+    "max_weight_change_per_step": 0.15,
 
     # --- Model (LSTM) ---
     "hidden_size": 128,
     "num_layers": 2,
     "dropout": 0.1,
     "log_std_init": -0.5,
+    "dirichlet_total_concentration": 0.0,
 
     # --- PPO ---
     "learning_rate": 2e-4,
@@ -68,16 +69,16 @@ DEFAULT_CONFIG = {
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_range": 0.2,
-    "ent_coef": 5e-3,
+    "ent_coef": 0.0,
     "vf_coef": 0.5,
     "max_grad_norm": 0.5,
-    "target_kl": 0.015,
+    "target_kl": 0.025,
 
     # --- Schedule ---
-    "total_timesteps": 500_000,
+    "total_timesteps": 600_000,
     "lr_decay": True,
     "lr_schedule": "cosine",
-    "min_learning_rate": 1e-5,
+    "min_learning_rate": 2e-5,
     "eval_freq": 5,
     "save_freq": 5,
     "milestone_checkpoint_steps": [100],
@@ -171,6 +172,8 @@ def resolve_ppo_config(config: dict | None = None,
         raise ValueError("trade_deadband phải >= 0.")
     if not (0 < resolved["max_weight_change_per_step"] <= 1.0):
         raise ValueError("max_weight_change_per_step phải trong khoảng (0, 1].")
+    if resolved["dirichlet_total_concentration"] < 0:
+        raise ValueError("dirichlet_total_concentration phải >= 0.")
     if resolved["total_timesteps"] <= 0:
         raise ValueError("total_timesteps phải > 0.")
     resolved["milestone_checkpoint_steps"] = normalize_checkpoint_milestones(
@@ -755,6 +758,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         num_layers=cfg["num_layers"],
         dropout=cfg["dropout"],
         log_std_init=cfg["log_std_init"],
+        dirichlet_total_concentration=cfg["dirichlet_total_concentration"],
     )
 
     agent = PPOAgent(
@@ -799,6 +803,15 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     logger.info(
         f"LR schedule: {cfg['lr_schedule']} | "
         f"base_lr={cfg['learning_rate']:.2e} | min_lr={cfg['min_learning_rate']:.2e}"
+    )
+    logger.info(
+        "Policy exploration: "
+        + (
+            f"fixed_dirichlet_total_concentration={cfg['dirichlet_total_concentration']:.2f}"
+            if cfg["dirichlet_total_concentration"] > 0
+            else "legacy_free_dirichlet_concentration"
+        )
+        + f" | ent_coef={cfg['ent_coef']:.4f}"
     )
     if cfg["milestone_checkpoint_steps"]:
         logger.info(f"Milestone checkpoints: {cfg['milestone_checkpoint_steps']}")
@@ -894,6 +907,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 f"pi_loss={update_stats['policy_loss']:.5f} | "
                 f"v_loss={update_stats['value_loss']:.5f} | "
                 f"kl={update_stats['approx_kl']:.5f} | "
+                f"grad={update_stats.get('grad_norm', 0):.4f} | "
                 f"lr={agent.get_lr():.2e}"
             )
 

@@ -109,6 +109,8 @@ class PPOConfigLogicTests(unittest.TestCase):
             resolve_ppo_config(config={"trade_deadband": -0.01})
         with self.assertRaisesRegex(ValueError, "max_weight_change_per_step"):
             resolve_ppo_config(config={"max_weight_change_per_step": 0.0})
+        with self.assertRaisesRegex(ValueError, "dirichlet_total_concentration"):
+            resolve_ppo_config(config={"dirichlet_total_concentration": -1.0})
 
     def test_resolve_ppo_config_normalizes_milestone_checkpoint_steps(self):
         cfg = resolve_ppo_config(

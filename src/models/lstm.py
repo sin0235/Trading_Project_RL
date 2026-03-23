@@ -68,6 +68,23 @@ def _init_sequential(sequential: nn.Sequential, output_gain: float = 1.0):
             orthogonal_init(layer, gain=output_gain)
 
 
+def _set_module_training_mode(module: nn.Module, training: bool) -> nn.Module:
+    """
+    Tương thích với môi trường torch thiếu nn.Module.train().
+
+    Một số runtime downstream vẫn có eval() nhưng không expose train().
+    Hàm này tự lan mode train/eval xuống toàn bộ cây module.
+    """
+    module.training = bool(training)
+    for child in module.children():
+        train_fn = getattr(type(child), "train", None)
+        if callable(train_fn):
+            child.train(training)
+        else:
+            _set_module_training_mode(child, training)
+    return module
+
+
 # ============================================================
 #  Trích đặc trưng LSTM (Backbone)
 # ============================================================
@@ -268,6 +285,12 @@ class DRQNNetwork(nn.Module):
                     device: torch.device = None) -> tuple:
         return self.feature_extractor.init_hidden(batch_size, device)
 
+    def train(self, mode: bool = True):
+        return _set_module_training_mode(self, mode)
+
+    def eval(self):
+        return self.train(False)
+
     def select_action(self, market_state: torch.Tensor,
                       portfolio_state: torch.Tensor,
                       hidden: tuple, epsilon: float = 0.0) -> tuple:
@@ -313,6 +336,11 @@ class PPOLSTMActorCritic(nn.Module):
     Action luôn có tổng bằng 1, phù hợp trực tiếp với vector tỷ trọng mục tiêu
     (N stocks + 1 cash) mà environment thực thi.
 
+    Có thể cố định total concentration của Dirichlet để sampling trong lúc train
+    bám sát mean-action hơn. Điều này đặc biệt hữu ích khi deploy/eval dùng
+    deterministic mean-action, tránh mismatch lớn giữa train-time sample và
+    inference-time allocation.
+
     Architecture:
         market_state → LSTM → lstm_features (128)
                                     ↓ concat portfolio (17)
@@ -329,7 +357,8 @@ class PPOLSTMActorCritic(nn.Module):
     def __init__(self, n_stocks: int, n_features: int,
                  seq_len: int = 30, hidden_size: int = 128,
                  num_layers: int = 2, dropout: float = 0.1,
-                 log_std_init: float = -0.5):
+                 log_std_init: float = -0.5,
+                 dirichlet_total_concentration: float = 0.0):
         """
         Args:
             n_stocks: Số lượng cổ phiếu (vd: 16)
@@ -340,6 +369,10 @@ class PPOLSTMActorCritic(nn.Module):
             dropout: Dropout rate
             log_std_init: Giữ lại để tương thích ngược với config cũ. Không còn dùng
                           sau khi policy chuyển sang Dirichlet trên simplex.
+            dirichlet_total_concentration:
+                Nếu > 0, normalize actor output về mean weights rồi scale về
+                tổng concentration cố định này. Khi = 0, dùng legacy mode:
+                mỗi chiều alpha_i được học tự do.
         """
         super().__init__()
 
@@ -347,6 +380,9 @@ class PPOLSTMActorCritic(nn.Module):
         self.n_features = n_features
         self.hidden_size = hidden_size
         self.log_std_init = log_std_init
+        self.dirichlet_total_concentration = float(dirichlet_total_concentration)
+        if self.dirichlet_total_concentration < 0.0:
+            raise ValueError("dirichlet_total_concentration phải >= 0.")
 
         input_size = n_stocks * n_features
         portfolio_dim = 1 + n_stocks
@@ -379,10 +415,10 @@ class PPOLSTMActorCritic(nn.Module):
             nn.Linear(hidden_size // 2, 1),
         )
 
-        # Actor: gain nhỏ để actions gần 0 lúc đầu (khám phá tốt hơn)
-        _init_sequential(self.actor_head, output_gain=0.01)
+        # Actor: gain vừa phải để policy có thể diverge khỏi initial bias
+        _init_sequential(self.actor_head, output_gain=0.1)
         _init_sequential(self.critic_head, output_gain=1.0)
-        self._set_initial_dirichlet_bias(target_concentration=1.0)
+        self._set_initial_dirichlet_bias(target_concentration=3.0)
 
     def _set_initial_dirichlet_bias(self, target_concentration: float) -> None:
         """Khởi tạo bias cuối để concentration ban đầu xấp xỉ 1.0 (gần uniform)."""
@@ -422,7 +458,14 @@ class PPOLSTMActorCritic(nn.Module):
         combined = torch.cat([lstm_features, portfolio_state], dim=-1)
 
         concentration_logits = self.actor_head(combined)
-        concentration = F.softplus(concentration_logits) + self.CONCENTRATION_MIN
+        concentration_scores = F.softplus(concentration_logits) + self.CONCENTRATION_MIN
+        if self.dirichlet_total_concentration > 0.0:
+            concentration = concentration_scores / concentration_scores.sum(
+                dim=-1, keepdim=True
+            ).clamp_min(self.ACTION_EPS)
+            concentration = concentration * self.dirichlet_total_concentration
+        else:
+            concentration = concentration_scores
 
         # Critic
         value = self.critic_head(combined)
@@ -432,6 +475,12 @@ class PPOLSTMActorCritic(nn.Module):
     def init_hidden(self, batch_size: int,
                     device: torch.device = None) -> tuple:
         return self.feature_extractor.init_hidden(batch_size, device)
+
+    def train(self, mode: bool = True):
+        return _set_module_training_mode(self, mode)
+
+    def eval(self):
+        return self.train(False)
 
     def get_action(self, market_state: torch.Tensor,
                    portfolio_state: torch.Tensor,

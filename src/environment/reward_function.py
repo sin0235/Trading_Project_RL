@@ -89,9 +89,9 @@ class SharpeRewardFunction:
         self,
         window: int = 30,
         sharpe_scale: float = 1.0,
-        excess_scale: float = 50.0,
-        drawdown_scale: float = 3.0,
-        turnover_scale: float = 0.5,
+        excess_scale: float = 80.0,
+        drawdown_scale: float = 2.0,
+        turnover_scale: float = 0.2,
     ):
         self.window = window
         self.sharpe_scale = sharpe_scale

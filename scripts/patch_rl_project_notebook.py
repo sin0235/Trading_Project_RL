@@ -191,7 +191,7 @@ DASHBOARD_PARTS.append(
   const replayRuns = () => Array.isArray(replay().runs) ? replay().runs : [];
   const replayRun = () => replayRuns()[state.run] || replayRuns()[0] || {run_id:'N/A', label:'Chưa có replay', data_source_label:'vnstock', display_start:null, display_end:null, checkpoints:[], defaultCheckpointId:null, defaultCompareCheckpointId:null, worstCheckpointId:null, firstCheckpointId:null};
   const cps = () => Array.isArray(replayRun().checkpoints) ? replayRun().checkpoints : [];
-  const stage = (cp, idx, total) => { if (!cp) return 'Policy'; if (cp.checkpoint_id === 'best_model') return 'Best'; if (cp.checkpoint_id === 'final_model') return 'Final'; if (idx === 0) return 'Mới học'; if (idx <= Math.max(1, Math.floor((total - 1) / 3))) return 'Đang học'; if (idx >= total - 2) return 'Ổn định'; return 'Tăng tốc'; };
+  const stage = (cp, idx, total) => { if (!cp) return 'Policy'; if (cp.kind === 'untrained' || cp.checkpoint_id === 'seed42_untrained') return 'Chưa học'; if (cp.checkpoint_id === 'best_model') return 'Best'; if (cp.checkpoint_id === 'final_model') return 'Final'; if (idx === 0) return 'Mới học'; if (idx <= Math.max(1, Math.floor((total - 1) / 3))) return 'Đang học'; if (idx >= total - 2) return 'Ổn định'; return 'Tăng tốc'; };
   const defaultCp = () => { const list = cps(); if (!list.length) return 0; const run = replayRun(); const wanted = run.defaultCheckpointId || run.bestCheckpointId || 'best_model'; const idx = list.findIndex((x) => x && x.checkpoint_id === wanted); if (idx >= 0) return idx; const best = list.findIndex((x) => x && x.checkpoint_id === 'best_model'); return best >= 0 ? best : 0; };
   const defaultCmp = () => {
     const list = cps();

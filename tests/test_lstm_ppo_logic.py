@@ -81,6 +81,29 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertEqual(value.shape, (2, 1))
         self.assertEqual(q_values.shape, (2, 12))
 
+    def test_fixed_dirichlet_total_concentration_stabilizes_sampling_scale(self):
+        torch.manual_seed(0)
+        target_total = 64.0
+        model = PPOLSTMActorCritic(
+            n_stocks=3,
+            n_features=7,
+            seq_len=30,
+            dirichlet_total_concentration=target_total,
+        )
+        model.eval()
+
+        market = torch.randn(8, 30, 21)
+        portfolio = torch.randn(8, 4)
+
+        concentration, _, _ = model.forward(market, portfolio)
+
+        self.assertTrue(torch.allclose(
+            concentration.sum(dim=-1),
+            torch.full((8,), target_total),
+            atol=1e-4,
+        ))
+        self.assertTrue(torch.all(concentration > 0.0).item())
+
     def test_forget_gate_effective_bias_is_one(self):
         extractor = LSTMFeatureExtractor(input_size=12, hidden_size=8, num_layers=2, dropout=0.1)
 

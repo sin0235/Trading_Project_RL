@@ -52,8 +52,10 @@ class ZeppelinCheckpointReplayHelperTests(unittest.TestCase):
 
             self.assertEqual(
                 [item["checkpoint_id"] for item in checkpoints],
-                ["checkpoint_5120", "checkpoint_20480", "checkpoint_81920", "best_model", "final_model"],
+                ["seed42_untrained", "checkpoint_20480", "checkpoint_81920", "best_model", "final_model"],
             )
+            self.assertEqual(checkpoints[0]["kind"], "untrained")
+            self.assertEqual(checkpoints[0]["seed"], 42)
 
     def test_find_replay_start_t_keeps_window_buffer_before_display_start(self):
         dates = pd.date_range("2026-01-01", periods=90, freq="B")

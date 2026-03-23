@@ -207,6 +207,7 @@ class PPOAgent:
     def update(self) -> Dict[str, float]:
         """
         PPO clipped update trên buffer. Mini-batch shuffle, stateless hidden.
+        Dùng clipped value loss + per-minibatch advantage normalization.
         Trả về dict training metrics.
         """
         # PPO update phải chạy ở train mode để cuDNN cho phép backward qua LSTM.
@@ -215,16 +216,18 @@ class PPOAgent:
         data = self.buffer.get_tensors(self.device)
 
         n = len(self.buffer)
-        advantages = data["advantages"]
-        adv_std = advantages.std()
-        if adv_std > 1e-8:
-            advantages = (advantages - advantages.mean()) / (adv_std + 1e-8)
+        advantages_raw = data["advantages"]
+        old_values = torch.tensor(
+            np.array(self.buffer.values, dtype=np.float32),
+            dtype=torch.float32, device=self.device,
+        )
 
         sum_policy_loss = 0.0
         sum_value_loss = 0.0
         sum_entropy = 0.0
         sum_approx_kl = 0.0
         sum_clip_frac = 0.0
+        sum_grad_norm = 0.0
         n_mini_batches = 0
         early_stop = False
 
@@ -242,8 +245,14 @@ class PPOAgent:
                 mb_portfolio = data["portfolio_states"][idx]
                 mb_actions = data["actions"][idx]
                 mb_old_lp = data["old_log_probs"][idx]
-                mb_adv = advantages[idx]
                 mb_ret = data["returns"][idx]
+                mb_old_val = old_values[idx]
+
+                # Per-minibatch advantage normalization
+                mb_adv = advantages_raw[idx]
+                mb_adv_std = mb_adv.std()
+                if mb_adv_std > 1e-8:
+                    mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv_std + 1e-8)
 
                 new_lp, entropy, new_val, _ = self.model.evaluate_actions(
                     mb_market, mb_portfolio, mb_actions, hidden=None
@@ -257,14 +266,21 @@ class PPOAgent:
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                value_loss = nn.functional.mse_loss(new_val, mb_ret)
+                # Clipped value loss (SB3-style)
+                value_pred_clipped = mb_old_val + torch.clamp(
+                    new_val - mb_old_val, -self.clip_range, self.clip_range
+                )
+                vf_loss_unclipped = (new_val - mb_ret).pow(2)
+                vf_loss_clipped = (value_pred_clipped - mb_ret).pow(2)
+                value_loss = 0.5 * torch.max(vf_loss_unclipped, vf_loss_clipped).mean()
+
                 entropy_loss = -entropy.mean()
 
                 loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
                 with torch.no_grad():
@@ -276,6 +292,7 @@ class PPOAgent:
                 sum_entropy += (-entropy_loss.item())
                 sum_approx_kl += approx_kl
                 sum_clip_frac += clip_frac
+                sum_grad_norm += float(grad_norm)
                 n_mini_batches += 1
 
                 if self.target_kl is not None and approx_kl > 1.5 * self.target_kl:
@@ -291,6 +308,7 @@ class PPOAgent:
             "entropy": sum_entropy / d,
             "approx_kl": sum_approx_kl / d,
             "clip_fraction": sum_clip_frac / d,
+            "grad_norm": sum_grad_norm / d,
             "n_mini_batches": n_mini_batches,
             "early_stop_epoch": epoch if early_stop else self.n_epochs,
         }

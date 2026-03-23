@@ -37,6 +37,9 @@ from scripts.dashboard_paths import (
 REPLAY_PAYLOAD_SCHEMA_VERSION = 2
 MIN_COMMON_REPLAY_DAYS = 10
 FALLBACK_CACHE_SOURCE = "fallback-cache"
+UNTRAINED_REPLAY_CHECKPOINT_ID = "seed42_untrained"
+UNTRAINED_REPLAY_CHECKPOINT_LABEL = "Chưa học (seed 42)"
+UNTRAINED_REPLAY_CHECKPOINT_SEED = 42
 
 
 def _results_root(project_root: str | Path, results_dir: str | Path | None = None) -> Path:
@@ -239,6 +242,18 @@ def _sample_evenly(paths: list[Path], count: int) -> list[Path]:
     return selected
 
 
+def _untrained_replay_checkpoint(run_dir: str | Path) -> dict[str, Any]:
+    run_path = Path(run_dir).resolve()
+    return {
+        "checkpoint_id": UNTRAINED_REPLAY_CHECKPOINT_ID,
+        "label": UNTRAINED_REPLAY_CHECKPOINT_LABEL,
+        "path": run_path / f"{UNTRAINED_REPLAY_CHECKPOINT_ID}.pt",
+        "kind": "untrained",
+        "step": None,
+        "seed": UNTRAINED_REPLAY_CHECKPOINT_SEED,
+    }
+
+
 def select_replay_checkpoints(run_dir: str | Path, numeric_count: int = 4) -> list[dict[str, Any]]:
     run_path = Path(run_dir)
     checkpoint_dirs = [run_path / "checkpoints", run_path]
@@ -290,6 +305,8 @@ def select_replay_checkpoints(run_dir: str | Path, numeric_count: int = 4) -> li
     numeric_items = [item for item in deduped if item["kind"] == "numeric"]
     extra_items = [item for item in deduped if item["kind"] != "numeric"]
     numeric_items.sort(key=lambda item: item["step"])
+    if numeric_items:
+        numeric_items = [_untrained_replay_checkpoint(run_path)] + numeric_items[1:]
     return numeric_items + extra_items
 
 
@@ -371,7 +388,11 @@ def _load_run_config_for_replay(run_dir: Path) -> dict[str, Any]:
     if not checkpoints:
         raise FileNotFoundError(f"Run không có checkpoint để replay: {run_dir}")
 
-    ckpt_path = checkpoints[0]["path"]
+    real_checkpoint = next(
+        (item for item in checkpoints if str(item.get("kind") or "").strip().lower() != "untrained"),
+        checkpoints[0],
+    )
+    ckpt_path = real_checkpoint["path"]
     try:
         return load_run_config(run_dir, overrides={"device": "cpu"})
     except FileNotFoundError:
@@ -928,7 +949,13 @@ def _build_recent_dataset(
     )
 
 
-def _build_model(config: dict[str, Any], checkpoint_path: Path) -> PPOLSTMActorCritic:
+def _build_model(config: dict[str, Any], checkpoint_info: dict[str, Any]) -> PPOLSTMActorCritic:
+    checkpoint_kind = str(checkpoint_info.get("kind") or "").strip().lower()
+    checkpoint_path = Path(checkpoint_info["path"])
+    seed = int(checkpoint_info.get("seed") or config.get("seed") or UNTRAINED_REPLAY_CHECKPOINT_SEED)
+    if checkpoint_kind == "untrained":
+        torch.manual_seed(seed)
+
     model = PPOLSTMActorCritic(
         n_stocks=len(config["tickers"]),
         n_features=len(config["features"]),
@@ -937,7 +964,12 @@ def _build_model(config: dict[str, Any], checkpoint_path: Path) -> PPOLSTMActorC
         num_layers=int(config["num_layers"]),
         dropout=float(config["dropout"]),
         log_std_init=float(config.get("log_std_init", DEFAULT_CONFIG["log_std_init"])),
+        dirichlet_total_concentration=float(config.get("dirichlet_total_concentration", 0.0)),
     )
+
+    if checkpoint_kind == "untrained":
+        model.eval()
+        return model
 
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = payload.get("model_state_dict")
@@ -1532,7 +1564,7 @@ def _checkpoint_payload(
     ddq_compare: dict[str, Any] | None = None,
     max_frames: int | None = None,
 ) -> dict[str, Any]:
-    model = _build_model(config, checkpoint_info["path"])
+    model = _build_model(config, checkpoint_info)
     env = _make_eval_env(config, dataset.data_dict)
     start_t = int(benchmark["start_t"])
 
@@ -1672,7 +1704,8 @@ def _checkpoint_payload(
         "checkpoint_id": checkpoint_info["checkpoint_id"],
         "label": checkpoint_info["label"],
         "kind": checkpoint_info["kind"],
-        "step": checkpoint_info["step"] if checkpoint_info["step"] >= 0 else None,
+        "step": checkpoint_info["step"] if isinstance(checkpoint_info.get("step"), int) and checkpoint_info["step"] >= 0 else None,
+        "seed": checkpoint_info.get("seed"),
         "file_name": checkpoint_info["path"].name,
         "frameCount": len(frames),
         "frames": frames,
@@ -1838,8 +1871,8 @@ def build_checkpoint_replay_payload(
                 float(item.get("summary", {}).get("worst_value", float("inf"))),
             ),
         )
-        first_numeric_checkpoint = next(
-            (item for item in checkpoint_payloads if item.get("kind") == "numeric"),
+        first_baseline_checkpoint = next(
+            (item for item in checkpoint_payloads if item.get("kind") in {"untrained", "numeric"}),
             checkpoint_payloads[0],
         )
         for item in checkpoint_payloads:
@@ -1880,11 +1913,11 @@ def build_checkpoint_replay_payload(
                 "defaultCheckpointId": default_checkpoint["checkpoint_id"],
                 "bestCheckpointId": best_checkpoint["checkpoint_id"],
                 "worstCheckpointId": worst_checkpoint["checkpoint_id"],
-                "firstCheckpointId": first_numeric_checkpoint["checkpoint_id"],
+                "firstCheckpointId": first_baseline_checkpoint["checkpoint_id"],
                 "defaultCompareCheckpointId": (
                     worst_checkpoint["checkpoint_id"]
                     if worst_checkpoint["checkpoint_id"] != default_checkpoint["checkpoint_id"]
-                    else first_numeric_checkpoint["checkpoint_id"]
+                    else first_baseline_checkpoint["checkpoint_id"]
                 ),
                 "ddqCompareAvailable": bool(ddq_compare),
             }
