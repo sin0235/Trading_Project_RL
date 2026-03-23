@@ -871,6 +871,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             reset_seed=train_reset_seed,
         )
         train_reset_seed = None
+        rollout_diag = dict(agent.last_rollout_stats or {})
 
         # Update
         update_stats = agent.update()
@@ -886,6 +887,12 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 n_trades=ep["n_trades"],
                 total_cost=ep["total_cost"],
                 steps=ep["steps"],
+                extra={
+                    "avg_turnover": ep.get("avg_turnover", 0.0),
+                    "steps_with_trades": ep.get("steps_with_trades", 0),
+                    "steps_with_trades_pct": ep.get("steps_with_trades_pct", 0.0),
+                    "avg_concentration_sum": ep.get("avg_concentration_sum", 0.0),
+                },
             )
 
         # Log update
@@ -897,6 +904,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             approx_kl=update_stats["approx_kl"],
             clip_fraction=update_stats["clip_fraction"],
             learning_rate=agent.get_lr(),
+            extra=rollout_diag,
         )
 
         # Periodic info
@@ -908,12 +916,16 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 f"v_loss={update_stats['value_loss']:.5f} | "
                 f"kl={update_stats['approx_kl']:.5f} | "
                 f"grad={update_stats.get('grad_norm', 0):.4f} | "
-                f"lr={agent.get_lr():.2e}"
+                f"lr={agent.get_lr():.2e} | "
+                f"turnover={rollout_diag.get('avg_turnover', 0.0):.2%} | "
+                f"trade_steps={int(rollout_diag.get('steps_with_trades', 0))}/{rollout_steps} | "
+                f"conc_sum={rollout_diag.get('avg_concentration_sum', 0.0):.2f}"
             )
 
         # Periodic eval on val set
         if is_periodic_trigger_step(agent.total_steps, cfg["eval_freq"], cfg["n_steps"]):
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
+            val_diag = dict(agent.last_eval_stats or {})
             val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
             avg_val_metrics = average_metrics(val_metrics_list)
             val_baselines = evaluate_baselines(val_env, cfg["initial_balance"])
@@ -921,8 +933,15 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 name: build_baseline_comparison(avg_val_metrics, metrics)
                 for name, metrics in val_baselines.items()
             }
-            logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val")
+            logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val", extra=val_diag)
             logger.info(f"\n{format_report(avg_val_metrics)}")
+            logger.info(
+                "[DIAG/VAL] "
+                f"avg_turnover={val_diag.get('avg_turnover', 0.0):.2%} | "
+                f"steps_with_trades={val_diag.get('steps_with_trades', 0):.1f} | "
+                f"steps_with_trades_pct={val_diag.get('steps_with_trades_pct', 0.0):.2%} | "
+                f"avg_concentration_sum={val_diag.get('avg_concentration_sum', 0.0):.2f}"
+            )
             for name, metrics in val_baselines.items():
                 logger.info(format_baseline_comparison(name.upper(), avg_val_metrics, metrics))
 
@@ -949,13 +968,21 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         logger.info("best_model.pt chưa tồn tại, dùng model hiện tại ở cuối training để final eval")
 
     test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
+    test_diag = dict(agent.last_eval_stats or {})
     test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]
     avg_test = average_metrics(test_metrics_list)
     test_baselines = evaluate_baselines(test_env, cfg["initial_balance"])
 
-    logger.log_eval(episode=episode_counter, metrics=avg_test, split="test")
+    logger.log_eval(episode=episode_counter, metrics=avg_test, split="test", extra=test_diag)
     logger.info(f"\n=== FINAL TEST RESULTS (avg {len(test_values)} episodes) ===")
     logger.info(f"\n{format_report(avg_test)}")
+    logger.info(
+        "[DIAG/TEST] "
+        f"avg_turnover={test_diag.get('avg_turnover', 0.0):.2%} | "
+        f"steps_with_trades={test_diag.get('steps_with_trades', 0):.1f} | "
+        f"steps_with_trades_pct={test_diag.get('steps_with_trades_pct', 0.0):.2%} | "
+        f"avg_concentration_sum={test_diag.get('avg_concentration_sum', 0.0):.2f}"
+    )
     for name, metrics in test_baselines.items():
         logger.info(format_baseline_comparison(name.upper(), avg_test, metrics))
 
@@ -975,6 +1002,10 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                     name: build_baseline_comparison(avg_test, metrics)
                     for name, metrics in test_baselines.items()
                 },
+            },
+            "diagnostics": {
+                "last_rollout": rollout_diag,
+                "test": test_diag,
             },
         },
     )

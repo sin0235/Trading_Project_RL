@@ -271,6 +271,9 @@ class TradingEnv(gym.Env):
         self.portfolio_value = v_new
 
         post_trade_value = self.cash + np.sum(self.holdings * execution_prices)
+        turnover_ratio = float(
+            np.sum(np.abs(trade_amounts) * execution_prices) / max(v_old, 1e-12)
+        )
         reward = self._calculate_reward(
             v_old=v_old,
             v_new=v_new,
@@ -299,6 +302,7 @@ class TradingEnv(gym.Env):
             trade_amounts,
             total_fees,
             execution_prices=execution_prices,
+            turnover_ratio=turnover_ratio,
         )
 
         # Logging at episode end
@@ -428,7 +432,7 @@ class TradingEnv(gym.Env):
         except TypeError:
             return float(self.reward_fn.calculate(v_old, v_new, trade_amounts))
 
-    def _build_info(self, prices, trades=None, fees=0.0, execution_prices=None):
+    def _build_info(self, prices, trades=None, fees=0.0, execution_prices=None, turnover_ratio: float = 0.0):
         if execution_prices is None:
             execution_prices = prices
         return {
@@ -439,6 +443,7 @@ class TradingEnv(gym.Env):
             "execution_prices": np.asarray(execution_prices).copy(),
             "trades": trades if trades is not None else np.zeros(self.n_stocks, dtype=np.int32),
             "fees": fees,
+            "turnover_ratio": float(turnover_ratio),
             "date": str(self.state_space.dates[self.t]),
             "step": self.t - (self.state_space.window_size - 1),
         }
