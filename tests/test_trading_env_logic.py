@@ -299,6 +299,27 @@ class TradingEnvLogicTests(unittest.TestCase):
         self.assertEqual(info["trades"][0], 0)
         self.assertGreater(info["trades"][1], 0)
 
+    def test_multidiscrete_sell_all_liquidates_odd_lot(self):
+        env = TradingEnv(
+            tickers=["AAA"],
+            mode="MultiDiscrete",
+            data_dict=make_data_dict(40, ("AAA",)),
+            window_size=30,
+            random_start=False,
+            min_shares=100,
+            initial_balance=0.0,
+            fee_rate=0.0,
+            initial=False,
+            previous_state=[0.0, 50, 10.0],
+        )
+
+        env.reward_fn.calculate = lambda v_old, v_new, trade_amounts=None: 0.0
+        env.reset()
+        _, _, _, _, info = env.step(np.array([0], dtype=np.int64))
+
+        self.assertEqual(int(info["trades"][0]), -50)
+        self.assertEqual(int(env.holdings[0]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

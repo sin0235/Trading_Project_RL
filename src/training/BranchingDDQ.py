@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
     "max_steps_train": 512,
     "max_steps_eval": 9999,
     "reward_scaling": 1.0,
-    "reward_name": "sharpe",
+    "reward_name": "advanced",
     "reward_window": 30,
 
     "hidden_size": 128,
@@ -184,16 +184,20 @@ def infer_run_config_from_checkpoint(
     ih_key = "feature_extractor.lstm.weight_ih_l0"
     hh_key = "feature_extractor.lstm.weight_hh_l0"
     shared_fc_key = "shared_fc.0.weight"
-    adv_out_key = None
-    for candidate in ("advantage_streams.0.2.bias", "advantage_stream.2.bias"):
-        if candidate in state_dict:
-            adv_out_key = candidate
-            break
+    branch_bias_keys = sorted(
+        [
+            key
+            for key in state_dict
+            if key.startswith("advantage_streams.") and key.endswith(".2.bias")
+        ],
+        key=lambda k: int(k.split(".")[1]),
+    )
+    has_legacy_adv_head = "advantage_stream.2.bias" in state_dict
     if (
         ih_key not in state_dict
         or hh_key not in state_dict
         or shared_fc_key not in state_dict
-        or adv_out_key is None
+        or (not branch_bias_keys and not has_legacy_adv_head)
     ):
         raise ValueError(f"Checkpoint không đúng định dạng DDQ-LSTM mong đợi: {ckpt_path}")
 
@@ -201,8 +205,6 @@ def infer_run_config_from_checkpoint(
     num_layers = len([k for k in state_dict if k.startswith("feature_extractor.lstm.weight_hh_l")])
     input_size = int(state_dict[ih_key].shape[1])
     combined_dim = int(state_dict[shared_fc_key].shape[1])
-    n_actions = int(state_dict[adv_out_key].shape[0])
-
     n_stocks = combined_dim - hidden_size - 1
     if n_stocks <= 0:
         raise ValueError(
@@ -214,14 +216,23 @@ def infer_run_config_from_checkpoint(
             f"Không suy luận được số features từ checkpoint {ckpt_path}: "
             f"input_size={input_size}, n_stocks={n_stocks}"
         )
-    if n_actions % n_stocks != 0:
-        raise ValueError(
-            f"Không suy luận được k từ checkpoint {ckpt_path}: "
-            f"n_actions={n_actions}, n_stocks={n_stocks}"
-        )
+    if branch_bias_keys:
+        if len(branch_bias_keys) != n_stocks:
+            raise ValueError(
+                f"Checkpoint có {len(branch_bias_keys)} advantage branches nhưng "
+                f"suy luận được n_stocks={n_stocks}. Không thể dựng model tương thích."
+            )
+        inferred_k = int(state_dict[branch_bias_keys[0]].shape[0])
+    else:
+        n_actions = int(state_dict["advantage_stream.2.bias"].shape[0])
+        if n_actions % n_stocks != 0:
+            raise ValueError(
+                f"Không suy luận được k từ checkpoint {ckpt_path}: "
+                f"n_actions={n_actions}, n_stocks={n_stocks}"
+            )
+        inferred_k = n_actions // n_stocks
 
     inferred_n_features = input_size // n_stocks
-    inferred_k = n_actions // n_stocks
 
     tickers = list(base_config.get("tickers", []))
     features = list(base_config.get("features", []))
@@ -720,6 +731,7 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
 
         ms, ps = state_space.flat_obs_to_sequential(obs)
         action = agent.select_action(ms, ps, epsilon)
+        print(f"Step {step}: action={action}, epsilon={epsilon:.4f}, portfolio_value={train_env.portfolio_value:.2f}, holdings={train_env.holdings}, cash={train_env.cash:.2f}")
         next_obs, reward, terminated, truncated, info = train_env.step(action)
         done = terminated or truncated
 
@@ -885,15 +897,13 @@ def evaluate_branchingddq(
         eval_cfg["n_eval_episodes"] = int(n_eval_episodes)
 
     set_seed(eval_cfg["seed"])
-
-    data_dict = load_data(tickers=eval_cfg["tickers"], data_path=DATA_PATH)
+    data_dict = load_data(tickers=eval_cfg["tickers"], data_path=eval_cfg["data_path"])
     split = split_by_ratio(
         data_dict,
         train_ratio=eval_cfg["train_ratio"],
         val_ratio=eval_cfg["val_ratio"],
         test_ratio=eval_cfg["test_ratio"],
     )
-
     test_env = make_env(eval_cfg["tickers"], split.test, eval_cfg, for_eval=True)
     state_space = test_env.state_space
 

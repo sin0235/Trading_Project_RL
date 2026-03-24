@@ -168,6 +168,7 @@ class BranchingDDQAgent:
         total_asset = float(info.get("portfolio_value", cash + float(np.sum(holding_values))))
         prev_total_asset = None if prev_snapshot is None else float(prev_snapshot["total_asset"])
         prev_cash = None if prev_snapshot is None else float(prev_snapshot["cash"])
+        prev_holdings = None if prev_snapshot is None else np.asarray(prev_snapshot["holdings"], dtype=np.int64)
 
         delta_asset = 0.0 if prev_total_asset is None else total_asset - prev_total_asset
         delta_asset_pct = (
@@ -193,12 +194,14 @@ class BranchingDDQAgent:
             prev_holding_values = None if prev_snapshot is None else prev_snapshot["holding_values"]
             for idx in ranked:
                 prev_value = 0.0 if prev_holding_values is None else float(prev_holding_values[idx])
-                delta_value = holding_values[idx] - prev_value
+                value_delta = holding_values[idx] - prev_value
+                prev_qty = 0 if prev_holdings is None else int(prev_holdings[idx])
+                qty_delta = int(holdings[idx]) - prev_qty
                 weight = 0.0 if abs(total_asset) < 1e-12 else (holding_values[idx] / total_asset) * 100.0
                 positions.append(
                     f"  - {tickers[idx]} | qty={int(holdings[idx])} | "
                     f"price={prices[idx]:,.2f} | value={holding_values[idx]:,.0f} | "
-                    f"delta={delta_value:+,.0f} | w={weight:.2f}%"
+                    f"qty_delta={qty_delta:+,d} | value_delta={value_delta:+,.0f} | w={weight:.2f}%"
                 )
 
             if top_k_holdings > 0 and non_zero_idx.size > len(ranked):
@@ -210,6 +213,7 @@ class BranchingDDQAgent:
         snapshot_state = {
             "total_asset": total_asset,
             "cash": cash,
+            "holdings": holdings.copy(),
             "holding_values": holding_values,
         }
         return snapshot_text, snapshot_state
@@ -357,6 +361,7 @@ class BranchingDDQAgent:
                     ms, ps = state_space.flat_obs_to_sequential(obs)
                     action = self.select_action(ms, ps, epsilon=eps)
                     obs, _reward, terminated, truncated, info = env.step(action)
+                    print(f"Step {step_counter}: action={action}")
                     done = terminated or truncated
                     step_counter += 1
 
