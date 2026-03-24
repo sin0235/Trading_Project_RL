@@ -371,7 +371,7 @@ class TradingEnv(gym.Env):
             return normalized
 
         normalized = np.asarray(action, dtype=np.int64)
-        if normalized.shape != (self.n_stocks,):
+        if normalized.shape != (self.n_stocks + 1,):
             raise ValueError(
                 f"Discrete action shape {normalized.shape} != ({self.n_stocks},)"
             )
