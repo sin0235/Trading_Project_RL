@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.models.lstm import BranchingDRQNNetwork
 np.random.seed(42)
@@ -267,16 +268,19 @@ class BranchingDDQAgent:
             return None
 
         self.model.train()
-        sum_loss = 0.0
+        tracked_stats: Dict[str, float] = {}
         n = 0
         for _ in range(self.gradient_steps):
             stats = self._update_once()
-            sum_loss += stats["loss"]
+            for key, value in stats.items():
+                tracked_stats[key] = tracked_stats.get(key, 0.0) + float(value)
             n += 1
         self.model.eval()
 
         self.n_updates += n
-        return {"loss": sum_loss / max(n, 1), "n_gradient_steps": n}
+        out = {k: v / max(n, 1) for k, v in tracked_stats.items()}
+        out["n_gradient_steps"] = float(n)
+        return out
 
     def _update_once(self) -> Dict[str, float]:
         batch = self.buffer.sample(self.batch_size, self.device)
@@ -299,18 +303,37 @@ class BranchingDDQAgent:
         current_q, _ = self.model(ms, ps, hidden=None)
         current_q = current_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # (B, N)
 
-        loss = nn.functional.smooth_l1_loss(current_q, target)
+        td_error = target - current_q
+        loss = F.smooth_l1_loss(current_q, target)
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         self.optimizer.step()
 
         with torch.no_grad():
             for tp, p in zip(self.target_model.parameters(), self.model.parameters()):
                 tp.data.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
 
-        return {"loss": loss.item()}
+        action_counts = torch.bincount(actions.view(-1), minlength=self.model.k).float()
+        action_probs = action_counts / action_counts.sum().clamp_min(1.0)
+
+        stats = {
+            "loss": float(loss.item()),
+            "q_mean": float(current_q.mean().item()),
+            "q_std": float(current_q.std(unbiased=False).item()),
+            "target_mean": float(target.mean().item()),
+            "target_std": float(target.std(unbiased=False).item()),
+            "td_abs_mean": float(td_error.abs().mean().item()),
+            "reward_mean": float(rewards.mean().item()),
+            "reward_std": float(rewards.std(unbiased=False).item()),
+            "done_ratio": float(dones.mean().item()),
+            "grad_norm": float(grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm),
+        }
+        for action_id, prob in enumerate(action_probs.tolist()):
+            stats[f"action_prob_{action_id}"] = float(prob)
+
+        return stats
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -361,7 +384,6 @@ class BranchingDDQAgent:
                     ms, ps = state_space.flat_obs_to_sequential(obs)
                     action = self.select_action(ms, ps, epsilon=eps)
                     obs, _reward, terminated, truncated, info = env.step(action)
-                    print(f"Step {step_counter}: action={action}")
                     done = terminated or truncated
                     step_counter += 1
 

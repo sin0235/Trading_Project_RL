@@ -80,6 +80,7 @@ DEFAULT_CONFIG = {
     "total_timesteps": 500_000,
     "lr_schedule": "cosine",
     "min_learning_rate": 1e-5,
+    "train_metrics_log_every": 200,
 
     "eval_freq": 10_000,
     "save_freq": 20_000,
@@ -475,6 +476,7 @@ def resolve_ddq_config(
         "gradient_steps",
         "epsilon_decay_steps",
         "total_timesteps",
+        "train_metrics_log_every",
         "eval_freq",
         "save_freq",
         "n_eval_episodes",
@@ -533,6 +535,8 @@ def resolve_ddq_config(
         raise ValueError("min_learning_rate không được lớn hơn learning_rate.")
     if resolved["total_timesteps"] <= 0:
         raise ValueError("total_timesteps phải > 0.")
+    if resolved["train_metrics_log_every"] <= 0:
+        raise ValueError("train_metrics_log_every phải > 0.")
     if resolved["epsilon_decay_steps"] < 0:
         raise ValueError("epsilon_decay_steps phải >= 0.")
 
@@ -548,6 +552,26 @@ def compute_epsilon(step: int, cfg: dict) -> float:
     t = min(int(step), decay)
     frac = t / decay
     return float(start + (end - start) * frac)
+
+
+def format_train_metrics_line(step: int, epsilon: float, lr: float, stats: dict) -> str:
+    """Format train metrics thành 1 dòng ngắn gọn cho notebook/terminal."""
+    n_gs = int(stats.get("n_gradient_steps", 0))
+    q_mean = float(stats.get("q_mean", 0.0))
+    q_std = float(stats.get("q_std", 0.0))
+    td_abs = float(stats.get("td_abs_mean", 0.0))
+    grad_norm = float(stats.get("grad_norm", 0.0))
+    done_ratio = float(stats.get("done_ratio", 0.0))
+    ap0 = float(stats.get("action_prob_0", 0.0))
+    ap1 = float(stats.get("action_prob_1", 0.0))
+    ap2 = float(stats.get("action_prob_2", 0.0))
+    loss = float(stats.get("loss", 0.0))
+
+    return (
+        f"[train] step={step:,} | loss={loss:.6f} | eps={epsilon:.4f} | lr={lr:.2e} | "
+        f"q={q_mean:.4f}+/-{q_std:.4f} | td_abs={td_abs:.5f} | grad={grad_norm:.4f} | "
+        f"done={done_ratio:.3f} | act(s/h/b)=({ap0:.2f}/{ap1:.2f}/{ap2:.2f}) | gs={n_gs}"
+    )
 
 
 def make_env(tickers, data_dict, config, for_eval=False):
@@ -752,6 +776,15 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
                 learning_rate=agent.get_lr(),
                 extra={"epsilon": epsilon, "n_gradient_steps": train_stats.get("n_gradient_steps", 0)},
             )
+            if step % int(cfg["train_metrics_log_every"]) == 0:
+                logger.info(
+                    format_train_metrics_line(
+                        step=step,
+                        epsilon=epsilon,
+                        lr=agent.get_lr(),
+                        stats=train_stats,
+                    )
+                )
 
         if done:
             episode_counter += 1
