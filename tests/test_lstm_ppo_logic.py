@@ -81,6 +81,29 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertEqual(value.shape, (2, 1))
         self.assertEqual(q_values.shape, (2, 12))
 
+    def test_fixed_dirichlet_total_concentration_stabilizes_sampling_scale(self):
+        torch.manual_seed(0)
+        target_total = 64.0
+        model = PPOLSTMActorCritic(
+            n_stocks=3,
+            n_features=7,
+            seq_len=30,
+            dirichlet_total_concentration=target_total,
+        )
+        model.eval()
+
+        market = torch.randn(8, 30, 21)
+        portfolio = torch.randn(8, 4)
+
+        concentration, _, _ = model.forward(market, portfolio)
+
+        self.assertTrue(torch.allclose(
+            concentration.sum(dim=-1),
+            torch.full((8,), target_total),
+            atol=1e-4,
+        ))
+        self.assertTrue(torch.all(concentration > 0.0).item())
+
     def test_forget_gate_effective_bias_is_one(self):
         extractor = LSTMFeatureExtractor(input_size=12, hidden_size=8, num_layers=2, dropout=0.1)
 
@@ -122,6 +145,11 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertTrue(np.isfinite(update_stats["policy_loss"]))
         self.assertTrue(np.isfinite(update_stats["value_loss"]))
         self.assertTrue(np.isfinite(update_stats["entropy"]))
+        self.assertIn("avg_turnover", agent.last_rollout_stats)
+        self.assertIn("steps_with_trades", agent.last_rollout_stats)
+        self.assertIn("avg_concentration_sum", agent.last_rollout_stats)
+        self.assertGreaterEqual(agent.last_rollout_stats["avg_turnover"], 0.0)
+        self.assertGreaterEqual(agent.last_rollout_stats["avg_concentration_sum"], 0.0)
         self.assertTrue(agent.model.training)
 
     def test_collect_rollout_preserves_episode_reward_across_calls(self):
@@ -155,6 +183,10 @@ class PPOLSTMLogicTests(unittest.TestCase):
         self.assertEqual(len(ep_infos_second), 1)
         self.assertEqual(ep_infos_second[0]["steps"], 5)
         self.assertEqual(ep_infos_second[0]["total_reward"], 5.0)
+        self.assertIn("avg_turnover", ep_infos_second[0])
+        self.assertIn("steps_with_trades", ep_infos_second[0])
+        self.assertIn("steps_with_trades_pct", ep_infos_second[0])
+        self.assertIn("avg_concentration_sum", ep_infos_second[0])
 
     def test_collect_rollout_reset_seed_is_reproducible(self):
         torch.manual_seed(0)
@@ -217,6 +249,9 @@ class PPOLSTMLogicTests(unittest.TestCase):
         values = agent.evaluate(env, env.state_space, n_episodes=3, deterministic=True)
 
         self.assertEqual(len(values), 1)
+        self.assertIn("avg_turnover", agent.last_eval_stats)
+        self.assertIn("steps_with_trades", agent.last_eval_stats)
+        self.assertIn("avg_concentration_sum", agent.last_eval_stats)
 
     def test_average_metrics_aggregates_all_keys(self):
         metrics = average_metrics(

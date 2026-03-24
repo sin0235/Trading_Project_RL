@@ -13,6 +13,7 @@ __pycache__/
 *.yaml
 *.yml
 !configs/*.yaml
+!Conf/ddq_conf.yaml
 
 *.html
 *.css
@@ -39,3 +40,6 @@ __pycache__/
 results/runs/*
 *.pt:Zone.Identifier
 *:Zone.Identifier
+.zeppelin_cache/
+*.html
+*.txt

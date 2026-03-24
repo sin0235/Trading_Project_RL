@@ -109,11 +109,24 @@ class TrainingLogger:
 
         self._write_csv(self._episode_writer, self._episode_file, row)
 
+        diagnostics = []
+        if extra:
+            avg_turnover = extra.get("avg_turnover")
+            steps_with_trades = extra.get("steps_with_trades")
+            avg_concentration_sum = extra.get("avg_concentration_sum")
+            if avg_turnover is not None:
+                diagnostics.append(f"turnover={float(avg_turnover):.2%}")
+            if steps_with_trades is not None:
+                diagnostics.append(f"trade_steps={int(round(float(steps_with_trades))):>3}/{steps}")
+            if avg_concentration_sum is not None:
+                diagnostics.append(f"conc_sum={float(avg_concentration_sum):.2f}")
+
         self.logger.info(
             f"[Ep {episode:>6}] reward={total_reward:>9.4f} | "
             f"value={portfolio_value:>16,.0f} | "
             f"return={total_return:>7.2%} | "
             f"trades={n_trades:>4} | cost={total_cost:>10,.0f}"
+            + (f" | {' | '.join(diagnostics)}" if diagnostics else "")
         )
 
     def log_eval(
@@ -121,6 +134,7 @@ class TrainingLogger:
         episode: int,
         metrics: Dict[str, float],
         split: str = "val",
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Ghi kết quả đánh giá tại một checkpoint.
@@ -132,8 +146,22 @@ class TrainingLogger:
         """
         row = {"episode": episode, "split": split, "timestamp": datetime.datetime.now().isoformat()}
         row.update({k: _safe_round(v) for k, v in metrics.items()})
+        if extra:
+            row.update({k: _safe_round(v) for k, v in extra.items()})
 
         self._write_csv(self._eval_writer, self._eval_file, row)
+
+        diagnostics = []
+        if extra:
+            avg_turnover = extra.get("avg_turnover")
+            steps_with_trades = extra.get("steps_with_trades")
+            avg_concentration_sum = extra.get("avg_concentration_sum")
+            if avg_turnover is not None:
+                diagnostics.append(f"turnover={float(avg_turnover):.2%}")
+            if steps_with_trades is not None:
+                diagnostics.append(f"trade_steps={float(steps_with_trades):.1f}")
+            if avg_concentration_sum is not None:
+                diagnostics.append(f"conc_sum={float(avg_concentration_sum):.2f}")
 
         self.logger.info(
             f"[EVAL/{split.upper()} Ep {episode}] "
@@ -141,6 +169,7 @@ class TrainingLogger:
             f"sharpe={metrics.get('sharpe_ratio', 0):.4f} | "
             f"max_dd={metrics.get('max_drawdown', 0):.2%} | "
             f"win_rate={metrics.get('win_rate', 0):.2%}"
+            + (f" | {' | '.join(diagnostics)}" if diagnostics else "")
         )
 
     def log_train_step(
@@ -253,6 +282,8 @@ class TrainingLogger:
         episode_cols = [
             "episode", "timestamp", "total_reward", "portfolio_value",
             "total_return_pct", "n_trades", "total_cost", "steps",
+            "avg_turnover", "steps_with_trades", "steps_with_trades_pct",
+            "avg_concentration_sum",
         ]
         eval_cols = [
             "episode", "split", "timestamp",
@@ -263,10 +294,14 @@ class TrainingLogger:
             "skewness", "kurtosis", "var_95", "cvar_95",
             "final_value", "initial_value",
             "alpha", "beta", "information_ratio",
+            "avg_turnover", "steps_with_trades", "steps_with_trades_pct",
+            "avg_concentration_sum",
         ]
         step_cols = [
             "step", "timestamp", "policy_loss", "value_loss",
             "entropy", "approx_kl", "clip_fraction", "learning_rate",
+            "avg_turnover", "steps_with_trades", "steps_with_trades_pct",
+            "avg_concentration_sum",
         ]
 
         self._episode_file, self._episode_writer = self._open_csv("metrics.csv", episode_cols)

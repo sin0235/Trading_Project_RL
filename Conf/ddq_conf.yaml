@@ -1,0 +1,76 @@
+tickers:
+  - ACB
+  - BID
+  - BVH
+  - CTG
+  - FPT
+  - GAS
+  - HPG
+  - MBB
+  - MSN
+  - MWG
+  - SHB
+  - SSI
+  - STB
+  - VCB
+  - VIC
+  - VNM
+
+features:
+  - close_norm
+  - return_1d
+  - return_5d
+  - return_20d
+  - macd
+  - rsi
+  - adx
+  - volume_norm
+  - volatility_20d
+
+window_size: 60
+
+data_path: data/processed_v2
+
+train_ratio: 0.7
+val_ratio: 0.15
+test_ratio: 0.15
+
+initial_balance: 1000000000
+fee_rate: 0.001
+max_steps_train: 512
+max_steps_eval: 9999
+reward_scaling: 1.0
+reward_name: sharpe
+reward_window: 30
+
+hidden_size: 128
+num_layers: 2
+dropout: 0.1
+k: 3
+
+learning_rate: 0.0001
+gamma: 0.99
+tau: 0.005
+batch_size: 64
+replay_buffer_size: 100000
+learning_starts: 5000
+train_freq: 4
+gradient_steps: 1
+max_grad_norm: 0.5
+
+epsilon_start: 1.0
+epsilon_end: 0.05
+epsilon_decay_steps: 200000
+
+total_timesteps: 500000
+lr_schedule: cosine
+min_learning_rate: 0.00001
+
+eval_freq: 10000
+save_freq: 20000
+milestone_checkpoint_steps:
+  - 100
+n_eval_episodes: 1
+
+seed: 42
+device: auto

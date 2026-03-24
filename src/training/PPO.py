@@ -17,6 +17,7 @@ import sys
 import math
 import json
 import random
+from collections.abc import Iterable
 import numpy as np
 import torch
 from pathlib import Path
@@ -45,41 +46,59 @@ DEFAULT_CONFIG = {
     # --- Environment ---
     "initial_balance": 1_000_000_000,
     "fee_rate": 0.001,
-    "max_steps_train": 512,
+    "max_steps_train": 756,
     "max_steps_eval": 9999,
     "reward_scaling": 1.0,
     "reward_name": "sharpe",
     "reward_window": 30,
-    "trade_deadband": 0.04,
-    "max_weight_change_per_step": 0.07,
+    "reward_sharpe_scale": 1.0,
+    "reward_excess_scale": 80.0,
+    "reward_drawdown_scale": 2.0,
+    "reward_turnover_scale": 0.2,
+    "reward_holding_scale": 0.1,
+    "reward_momentum_scale": 0.3,
+    "reward_dd_threshold": 0.05,
+    "reward_dd_escalation": 3.0,
+    "reward_advanced_alpha": 0.1,
+    "reward_advanced_beta": 0.5,
+    "reward_advanced_gamma": 0.01,
+    "trade_deadband": 0.015,
+    "max_weight_change_per_step": 0.10,
 
     # --- Model (LSTM) ---
     "hidden_size": 128,
     "num_layers": 2,
     "dropout": 0.1,
     "log_std_init": -0.5,
+    "dirichlet_total_concentration": 0.0,
 
     # --- PPO ---
-    "learning_rate": 2e-4,
+    "learning_rate": 3e-4,
     "n_steps": 2048,
-    "batch_size": 256,
-    "n_epochs": 10,
+    "batch_size": 128,
+    "n_epochs": 15,
     "gamma": 0.99,
     "gae_lambda": 0.95,
-    "clip_range": 0.2,
-    "ent_coef": 5e-3,
+    "clip_range": 0.25,
+    "ent_coef": 0.0,
     "vf_coef": 0.5,
     "max_grad_norm": 0.5,
-    "target_kl": 0.015,
+    "target_kl": 0.04,
 
     # --- Schedule ---
-    "total_timesteps": 500_000,
+    "total_timesteps": 600_000,
     "lr_decay": True,
     "lr_schedule": "cosine",
-    "min_learning_rate": 1e-5,
+    "min_learning_rate": 3e-5,
     "eval_freq": 5,
     "save_freq": 5,
+    "milestone_checkpoint_steps": [100],
     "n_eval_episodes": 1,
+    "early_stop_patience_evals": 0,
+    "early_stop_min_delta": 0.0,
+    "early_stop_min_evals": 0,
+    "early_stop_baseline": "off",
+    "early_stop_baseline_patience_evals": 0,
 
     # --- Misc ---
     "seed": 42,
@@ -139,6 +158,19 @@ def load_ppo_config(config_path: str | os.PathLike | None = None) -> dict:
     return cfg
 
 
+def normalize_early_stop_baseline(value) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "off", "none", "disable", "disabled", "false", "no"}:
+        return None
+    valid = {"equal_weight", "buy_and_hold_equal_weight"}
+    if normalized not in valid:
+        raise ValueError(
+            "early_stop_baseline không hợp lệ. Hỗ trợ: "
+            f"{sorted(valid)} hoặc off/none."
+        )
+    return normalized
+
+
 def resolve_ppo_config(config: dict | None = None,
                        config_path: str | os.PathLike | None = None) -> dict:
     yaml_cfg = load_ppo_config(config_path)
@@ -165,12 +197,53 @@ def resolve_ppo_config(config: dict | None = None,
         raise ValueError("min_learning_rate phải > 0.")
     if resolved["min_learning_rate"] > resolved["learning_rate"]:
         raise ValueError("min_learning_rate không được lớn hơn learning_rate.")
+    if resolved["reward_window"] <= 0:
+        raise ValueError("reward_window phải > 0.")
+    for key in (
+        "reward_sharpe_scale",
+        "reward_excess_scale",
+        "reward_drawdown_scale",
+        "reward_turnover_scale",
+        "reward_holding_scale",
+        "reward_momentum_scale",
+        "reward_dd_threshold",
+        "reward_dd_escalation",
+        "reward_advanced_alpha",
+        "reward_advanced_beta",
+        "reward_advanced_gamma",
+    ):
+        if resolved[key] < 0:
+            raise ValueError(f"{key} phải >= 0.")
     if resolved["trade_deadband"] < 0:
         raise ValueError("trade_deadband phải >= 0.")
     if not (0 < resolved["max_weight_change_per_step"] <= 1.0):
         raise ValueError("max_weight_change_per_step phải trong khoảng (0, 1].")
+    if resolved["dirichlet_total_concentration"] < 0:
+        raise ValueError("dirichlet_total_concentration phải >= 0.")
     if resolved["total_timesteps"] <= 0:
         raise ValueError("total_timesteps phải > 0.")
+    for key in (
+        "early_stop_patience_evals",
+        "early_stop_min_evals",
+        "early_stop_baseline_patience_evals",
+    ):
+        value = resolved[key]
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} phải là số nguyên >= 0.") from exc
+        if numeric < 0 or not numeric.is_integer():
+            raise ValueError(f"{key} phải là số nguyên >= 0.")
+        resolved[key] = int(numeric)
+    if resolved["early_stop_min_delta"] < 0:
+        raise ValueError("early_stop_min_delta phải >= 0.")
+    resolved["early_stop_baseline"] = normalize_early_stop_baseline(
+        resolved.get("early_stop_baseline")
+    )
+    resolved["milestone_checkpoint_steps"] = normalize_checkpoint_milestones(
+        resolved.get("milestone_checkpoint_steps"),
+        total_timesteps=resolved["total_timesteps"],
+    )
 
     return resolved
 
@@ -194,6 +267,184 @@ def compute_learning_rate(
         return float(min_lr + (base_lr - min_lr) * cosine_decay)
 
     raise ValueError(f"Unsupported lr_schedule: {schedule}")
+
+
+def normalize_checkpoint_milestones(
+    raw_steps,
+    total_timesteps: int | None = None,
+) -> list[int]:
+    if raw_steps is None:
+        return []
+
+    if isinstance(raw_steps, (str, bytes, int, float, np.integer, np.floating)):
+        values = [raw_steps]
+    elif isinstance(raw_steps, Iterable):
+        values = list(raw_steps)
+    else:
+        raise ValueError("milestone_checkpoint_steps phải là số nguyên hoặc danh sách số nguyên.")
+
+    normalized: list[int] = []
+    max_steps = int(total_timesteps) if total_timesteps is not None else None
+
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError("milestone_checkpoint_steps không được chứa giá trị boolean.")
+
+        if isinstance(value, str):
+            cleaned = value.strip().replace("_", "")
+            if not cleaned:
+                continue
+            try:
+                step = int(cleaned)
+            except ValueError as exc:
+                raise ValueError(
+                    f"milestone_checkpoint_steps chứa giá trị không hợp lệ: {value!r}"
+                ) from exc
+        elif isinstance(value, (int, np.integer)):
+            step = int(value)
+        elif isinstance(value, (float, np.floating)):
+            if not float(value).is_integer():
+                raise ValueError(
+                    f"milestone_checkpoint_steps phải là số nguyên dương, nhận được {value!r}"
+                )
+            step = int(value)
+        else:
+            raise ValueError(
+                f"milestone_checkpoint_steps chứa kiểu không hỗ trợ: {type(value).__name__}"
+            )
+
+        if step <= 0:
+            raise ValueError("milestone_checkpoint_steps phải chứa các mốc > 0.")
+        if max_steps is not None and step > max_steps:
+            continue
+        normalized.append(step)
+
+    return sorted(set(normalized))
+
+
+def build_reward_kwargs_from_config(config: dict) -> dict:
+    reward_name = str(config.get("reward_name", "sharpe")).strip().lower()
+    reward_kwargs = {"window": int(config.get("reward_window", 30))}
+
+    if reward_name in {"sharpe", "sharpe_reward", "sharpereward"}:
+        reward_kwargs.update(
+            {
+                "sharpe_scale": float(config.get("reward_sharpe_scale", 1.0)),
+                "excess_scale": float(config.get("reward_excess_scale", 80.0)),
+                "drawdown_scale": float(config.get("reward_drawdown_scale", 2.0)),
+                "turnover_scale": float(config.get("reward_turnover_scale", 0.2)),
+            }
+        )
+    elif reward_name in {"sharpe_plus", "sharpeplus", "sharpe_plus_reward"}:
+        reward_kwargs.update(
+            {
+                "sharpe_scale": float(config.get("reward_sharpe_scale", 1.0)),
+                "excess_scale": float(config.get("reward_excess_scale", 80.0)),
+                "holding_scale": float(config.get("reward_holding_scale", 0.1)),
+                "momentum_scale": float(config.get("reward_momentum_scale", 0.3)),
+                "drawdown_scale": float(config.get("reward_drawdown_scale", 3.0)),
+                "turnover_scale": float(config.get("reward_turnover_scale", 0.3)),
+                "dd_threshold": float(config.get("reward_dd_threshold", 0.05)),
+                "dd_escalation": float(config.get("reward_dd_escalation", 3.0)),
+            }
+        )
+    elif reward_name in {"advanced", "legacy", "advanced_reward"}:
+        reward_kwargs.update(
+            {
+                "alpha": float(config.get("reward_advanced_alpha", 0.1)),
+                "beta": float(config.get("reward_advanced_beta", 0.5)),
+                "gamma": float(config.get("reward_advanced_gamma", 0.01)),
+            }
+        )
+
+    return reward_kwargs
+
+
+def next_checkpoint_milestone(
+    current_step: int,
+    milestone_steps: list[int],
+    saved_steps: set[int] | None = None,
+) -> int | None:
+    saved = saved_steps or set()
+    for milestone in milestone_steps:
+        if milestone > current_step and milestone not in saved:
+            return milestone
+    return None
+
+
+def compute_rollout_steps_to_next_milestone(
+    current_step: int,
+    total_timesteps: int,
+    n_steps: int,
+    milestone_steps: list[int],
+    saved_steps: set[int] | None = None,
+    periodic_frequencies: Iterable[int] | None = None,
+) -> int:
+    remaining_steps = int(total_timesteps) - int(current_step)
+    if remaining_steps <= 0:
+        return 0
+
+    rollout_steps = min(int(n_steps), remaining_steps)
+    stop_candidates: list[int] = []
+
+    milestone = next_checkpoint_milestone(
+        current_step=int(current_step),
+        milestone_steps=milestone_steps,
+        saved_steps=saved_steps,
+    )
+    if milestone is not None:
+        stop_candidates.append(int(milestone))
+
+    for frequency in periodic_frequencies or ():
+        boundary = next_periodic_trigger_step(
+            current_step=int(current_step),
+            frequency=int(frequency),
+            n_steps=int(n_steps),
+            total_timesteps=int(total_timesteps),
+        )
+        if boundary is not None:
+            stop_candidates.append(boundary)
+
+    if not stop_candidates:
+        return rollout_steps
+
+    next_stop_step = min(stop_candidates)
+    steps_until_stop = int(next_stop_step) - int(current_step)
+    if steps_until_stop <= 0:
+        return rollout_steps
+
+    return min(rollout_steps, steps_until_stop)
+
+
+def compute_periodic_trigger_interval(frequency: int, n_steps: int) -> int:
+    frequency = int(frequency)
+    n_steps = int(n_steps)
+
+    if frequency <= 0:
+        raise ValueError("Periodic frequency phải > 0.")
+    if n_steps <= 0:
+        raise ValueError("n_steps phải > 0.")
+
+    return frequency * n_steps
+
+
+def next_periodic_trigger_step(
+    current_step: int,
+    frequency: int,
+    n_steps: int,
+    total_timesteps: int | None = None,
+) -> int | None:
+    interval = compute_periodic_trigger_interval(frequency=frequency, n_steps=n_steps)
+    next_step = ((int(current_step) // interval) + 1) * interval
+    if total_timesteps is not None and next_step > int(total_timesteps):
+        return None
+    return next_step
+
+
+def is_periodic_trigger_step(step: int, frequency: int, n_steps: int) -> bool:
+    interval = compute_periodic_trigger_interval(frequency=frequency, n_steps=n_steps)
+    step = int(step)
+    return step > 0 and step % interval == 0
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -479,7 +730,7 @@ def make_env(tickers, data_dict, config, for_eval=False):
         random_start=not for_eval,
         reward_scaling=config["reward_scaling"],
         reward_name=config["reward_name"],
-        reward_kwargs={"window": config["reward_window"]},
+        reward_kwargs=build_reward_kwargs_from_config(config),
         trade_deadband=config["trade_deadband"],
         max_weight_change_per_step=config["max_weight_change_per_step"],
         print_verbosity=999999,
@@ -609,6 +860,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         num_layers=cfg["num_layers"],
         dropout=cfg["dropout"],
         log_std_init=cfg["log_std_init"],
+        dirichlet_total_concentration=cfg["dirichlet_total_concentration"],
     )
 
     agent = PPOAgent(
@@ -644,7 +896,11 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     logger.info(f"Device: {agent.device} | Params: {total_params:,}")
     logger.info(
         f"Reward function: {cfg['reward_name']} | "
-        f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']}"
+        f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']} | "
+        f"sharpe_scale={cfg['reward_sharpe_scale']:.2f} | "
+        f"excess_scale={cfg['reward_excess_scale']:.2f} | "
+        f"drawdown_scale={cfg['reward_drawdown_scale']:.2f} | "
+        f"turnover_scale={cfg['reward_turnover_scale']:.2f}"
     )
     logger.info(
         f"Execution filters: trade_deadband={cfg['trade_deadband']:.3f} | "
@@ -654,25 +910,71 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         f"LR schedule: {cfg['lr_schedule']} | "
         f"base_lr={cfg['learning_rate']:.2e} | min_lr={cfg['min_learning_rate']:.2e}"
     )
+    logger.info(
+        "Policy exploration: "
+        + (
+            f"fixed_dirichlet_total_concentration={cfg['dirichlet_total_concentration']:.2f}"
+            if cfg["dirichlet_total_concentration"] > 0
+            else "legacy_free_dirichlet_concentration"
+        )
+        + f" | ent_coef={cfg['ent_coef']:.4f}"
+    )
+    if cfg["early_stop_patience_evals"] > 0 or cfg["early_stop_baseline_patience_evals"] > 0:
+        logger.info(
+            "Run early stopping: "
+            f"min_evals={cfg['early_stop_min_evals']} | "
+            f"patience_evals={cfg['early_stop_patience_evals']} | "
+            f"min_delta={cfg['early_stop_min_delta']:.4f} | "
+            f"baseline={cfg['early_stop_baseline'] or 'off'} | "
+            f"baseline_patience_evals={cfg['early_stop_baseline_patience_evals']}"
+        )
+    else:
+        logger.info("Run early stopping: disabled")
+    if cfg["milestone_checkpoint_steps"]:
+        logger.info(f"Milestone checkpoints: {cfg['milestone_checkpoint_steps']}")
 
     # ----------------------------------------------------------------
     # 5. Training loop
     # ----------------------------------------------------------------
-    n_rollouts = max(1, math.ceil(cfg["total_timesteps"] / cfg["n_steps"]))
     episode_counter = 0
     best_val_sharpe = -np.inf
     obs = None
     latest_val_baselines = None
+    rollout = 0
+    val_eval_count = 0
+    no_improve_evals = 0
+    below_baseline_evals = 0
+    stopped_early = False
+    early_stop_reason = None
+    early_stop_step = None
+    early_stop_episode = None
 
     save_dir = logger.get_run_dir() / "checkpoints"
     save_dir.mkdir(parents=True, exist_ok=True)
     train_reset_seed = cfg["seed"]
+    saved_checkpoint_steps: set[int] = set()
 
-    for rollout in range(1, n_rollouts + 1):
-        remaining_steps = cfg["total_timesteps"] - agent.total_steps
-        if remaining_steps <= 0:
+    def save_step_checkpoint(step: int, reason: str) -> bool:
+        step = int(step)
+        if step <= 0 or step in saved_checkpoint_steps:
+            return False
+        agent.save(str(save_dir / f"checkpoint_{step}.pt"))
+        saved_checkpoint_steps.add(step)
+        logger.info(f"Saved checkpoint_{step}.pt ({reason})")
+        return True
+
+    while agent.total_steps < cfg["total_timesteps"]:
+        rollout += 1
+        rollout_steps = compute_rollout_steps_to_next_milestone(
+            current_step=agent.total_steps,
+            total_timesteps=cfg["total_timesteps"],
+            n_steps=cfg["n_steps"],
+            milestone_steps=cfg["milestone_checkpoint_steps"],
+            saved_steps=saved_checkpoint_steps,
+            periodic_frequencies=(cfg["eval_freq"], cfg["save_freq"]),
+        )
+        if rollout_steps <= 0:
             break
-        rollout_steps = min(cfg["n_steps"], remaining_steps)
 
         progress = agent.total_steps / cfg["total_timesteps"]
         agent.set_lr(
@@ -693,6 +995,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             reset_seed=train_reset_seed,
         )
         train_reset_seed = None
+        rollout_diag = dict(agent.last_rollout_stats or {})
 
         # Update
         update_stats = agent.update()
@@ -708,6 +1011,12 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 n_trades=ep["n_trades"],
                 total_cost=ep["total_cost"],
                 steps=ep["steps"],
+                extra={
+                    "avg_turnover": ep.get("avg_turnover", 0.0),
+                    "steps_with_trades": ep.get("steps_with_trades", 0),
+                    "steps_with_trades_pct": ep.get("steps_with_trades_pct", 0.0),
+                    "avg_concentration_sum": ep.get("avg_concentration_sum", 0.0),
+                },
             )
 
         # Log update
@@ -719,22 +1028,28 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             approx_kl=update_stats["approx_kl"],
             clip_fraction=update_stats["clip_fraction"],
             learning_rate=agent.get_lr(),
+            extra=rollout_diag,
         )
 
         # Periodic info
         if rollout % 5 == 0 or rollout == 1:
             logger.info(
-                f"[Rollout {rollout}/{n_rollouts}] "
+                f"[Rollout {rollout}] "
                 f"steps={agent.total_steps:,} | "
                 f"pi_loss={update_stats['policy_loss']:.5f} | "
                 f"v_loss={update_stats['value_loss']:.5f} | "
                 f"kl={update_stats['approx_kl']:.5f} | "
-                f"lr={agent.get_lr():.2e}"
+                f"grad={update_stats.get('grad_norm', 0):.4f} | "
+                f"lr={agent.get_lr():.2e} | "
+                f"turnover={rollout_diag.get('avg_turnover', 0.0):.2%} | "
+                f"trade_steps={int(rollout_diag.get('steps_with_trades', 0))}/{rollout_steps} | "
+                f"conc_sum={rollout_diag.get('avg_concentration_sum', 0.0):.2f}"
             )
 
         # Periodic eval on val set
-        if rollout % cfg["eval_freq"] == 0:
+        if is_periodic_trigger_step(agent.total_steps, cfg["eval_freq"], cfg["n_steps"]):
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
+            val_diag = dict(agent.last_eval_stats or {})
             val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
             avg_val_metrics = average_metrics(val_metrics_list)
             val_baselines = evaluate_baselines(val_env, cfg["initial_balance"])
@@ -742,19 +1057,88 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 name: build_baseline_comparison(avg_val_metrics, metrics)
                 for name, metrics in val_baselines.items()
             }
-            logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val")
+            val_eval_count += 1
+            logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val", extra=val_diag)
             logger.info(f"\n{format_report(avg_val_metrics)}")
+            logger.info(
+                "[DIAG/VAL] "
+                f"avg_turnover={val_diag.get('avg_turnover', 0.0):.2%} | "
+                f"steps_with_trades={val_diag.get('steps_with_trades', 0):.1f} | "
+                f"steps_with_trades_pct={val_diag.get('steps_with_trades_pct', 0.0):.2%} | "
+                f"avg_concentration_sum={val_diag.get('avg_concentration_sum', 0.0):.2f}"
+            )
             for name, metrics in val_baselines.items():
                 logger.info(format_baseline_comparison(name.upper(), avg_val_metrics, metrics))
 
-            if avg_val_metrics.get("sharpe_ratio", -np.inf) > best_val_sharpe:
-                best_val_sharpe = avg_val_metrics["sharpe_ratio"]
+            current_val_sharpe = float(avg_val_metrics.get("sharpe_ratio", -np.inf))
+            improved = current_val_sharpe > best_val_sharpe + cfg["early_stop_min_delta"]
+            if improved:
+                best_val_sharpe = current_val_sharpe
+                no_improve_evals = 0
                 agent.save(str(save_dir / "best_model.pt"))
                 logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
+            else:
+                no_improve_evals += 1
+
+            baseline_label = cfg["early_stop_baseline"]
+            if baseline_label is not None:
+                baseline_metrics = val_baselines.get(baseline_label)
+                baseline_sharpe = float((baseline_metrics or {}).get("sharpe_ratio", -np.inf))
+                if current_val_sharpe > baseline_sharpe + cfg["early_stop_min_delta"]:
+                    below_baseline_evals = 0
+                else:
+                    below_baseline_evals += 1
+
+            if cfg["early_stop_patience_evals"] > 0 or cfg["early_stop_baseline_patience_evals"] > 0:
+                logger.info(
+                    "[EARLY_STOP] "
+                    f"eval_count={val_eval_count} | "
+                    f"no_improve_evals={no_improve_evals} | "
+                    f"below_baseline_evals={below_baseline_evals}"
+                )
+
+            if val_eval_count >= cfg["early_stop_min_evals"]:
+                if (
+                    cfg["early_stop_patience_evals"] > 0
+                    and no_improve_evals >= cfg["early_stop_patience_evals"]
+                ):
+                    stopped_early = True
+                    early_stop_reason = (
+                        "val_sharpe không cải thiện đủ "
+                        f"{cfg['early_stop_min_delta']:.4f} trong "
+                        f"{no_improve_evals} lần eval liên tiếp"
+                    )
+                elif (
+                    cfg["early_stop_baseline_patience_evals"] > 0
+                    and baseline_label is not None
+                    and below_baseline_evals >= cfg["early_stop_baseline_patience_evals"]
+                ):
+                    stopped_early = True
+                    early_stop_reason = (
+                        f"val_sharpe không vượt baseline '{baseline_label}' với biên "
+                        f"{cfg['early_stop_min_delta']:.4f} trong "
+                        f"{below_baseline_evals} lần eval liên tiếp"
+                    )
+
+            if stopped_early:
+                early_stop_step = int(agent.total_steps)
+                early_stop_episode = int(episode_counter)
+                save_step_checkpoint(agent.total_steps, "early_stop_snapshot")
+                logger.info(
+                    "[EARLY_STOP/TRIGGERED] "
+                    f"step={early_stop_step:,} | episode={early_stop_episode} | "
+                    f"reason={early_stop_reason}"
+                )
+
+        if agent.total_steps in cfg["milestone_checkpoint_steps"]:
+            save_step_checkpoint(agent.total_steps, "milestone_checkpoint")
 
         # Periodic checkpoint
-        if rollout % cfg["save_freq"] == 0:
-            agent.save(str(save_dir / f"checkpoint_{agent.total_steps}.pt"))
+        if is_periodic_trigger_step(agent.total_steps, cfg["save_freq"], cfg["n_steps"]):
+            save_step_checkpoint(agent.total_steps, "periodic_checkpoint")
+
+        if stopped_early:
+            break
 
     # ----------------------------------------------------------------
     # 6. Final eval on test set (load best model)
@@ -767,13 +1151,21 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         logger.info("best_model.pt chưa tồn tại, dùng model hiện tại ở cuối training để final eval")
 
     test_values = agent.evaluate(test_env, test_env.state_space, n_episodes=cfg["n_eval_episodes"])
+    test_diag = dict(agent.last_eval_stats or {})
     test_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in test_values]
     avg_test = average_metrics(test_metrics_list)
     test_baselines = evaluate_baselines(test_env, cfg["initial_balance"])
 
-    logger.log_eval(episode=episode_counter, metrics=avg_test, split="test")
+    logger.log_eval(episode=episode_counter, metrics=avg_test, split="test", extra=test_diag)
     logger.info(f"\n=== FINAL TEST RESULTS (avg {len(test_values)} episodes) ===")
     logger.info(f"\n{format_report(avg_test)}")
+    logger.info(
+        "[DIAG/TEST] "
+        f"avg_turnover={test_diag.get('avg_turnover', 0.0):.2%} | "
+        f"steps_with_trades={test_diag.get('steps_with_trades', 0):.1f} | "
+        f"steps_with_trades_pct={test_diag.get('steps_with_trades_pct', 0.0):.2%} | "
+        f"avg_concentration_sum={test_diag.get('avg_concentration_sum', 0.0):.2f}"
+    )
     for name, metrics in test_baselines.items():
         logger.info(format_baseline_comparison(name.upper(), avg_test, metrics))
 
@@ -793,6 +1185,26 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                     name: build_baseline_comparison(avg_test, metrics)
                     for name, metrics in test_baselines.items()
                 },
+            },
+            "diagnostics": {
+                "last_rollout": rollout_diag,
+                "test": test_diag,
+            },
+            "early_stop": {
+                "enabled": bool(
+                    cfg["early_stop_patience_evals"] > 0
+                    or cfg["early_stop_baseline_patience_evals"] > 0
+                ),
+                "stopped": stopped_early,
+                "reason": early_stop_reason,
+                "step": early_stop_step,
+                "episode": early_stop_episode,
+                "val_eval_count": val_eval_count,
+                "no_improve_evals": no_improve_evals,
+                "below_baseline_evals": below_baseline_evals,
+                "baseline": cfg["early_stop_baseline"],
+                "min_delta": cfg["early_stop_min_delta"],
+                "min_evals": cfg["early_stop_min_evals"],
             },
         },
     )
