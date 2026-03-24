@@ -731,7 +731,6 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
 
         ms, ps = state_space.flat_obs_to_sequential(obs)
         action = agent.select_action(ms, ps, epsilon)
-        print(f"Step {step}: action={action}, epsilon={epsilon:.4f}, portfolio_value={train_env.portfolio_value:.2f}, holdings={train_env.holdings}, cash={train_env.cash:.2f}")
         next_obs, reward, terminated, truncated, info = train_env.step(action)
         done = terminated or truncated
 
