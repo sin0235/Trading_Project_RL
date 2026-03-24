@@ -28,7 +28,7 @@ class AdvancedRewardFunction:
         self.returns_history.clear()
         self.max_portfolio_value = -np.inf
 
-    def calculate(self, v_old: float, v_new: float, trade_amounts: np.ndarray = None) -> float:
+    def calculate(self, v_old: float, v_new: float, trade_amounts: np.ndarray = None, execution_prices: np.ndarray = None) -> float:
         """
         Hàm phần thưởng lai (Hybrid Reward):
         R = Log_Return - (alpha * Volatility) - (beta * Drawdown) - (gamma * Turnover)
@@ -60,7 +60,7 @@ class AdvancedRewardFunction:
         if trade_amounts is not None:
             # Tính tổng số cổ phiếu được giao dịch
             # turnover_penalty = float(np.sum(np.abs(trade_amounts))) / 1000
-            turnover_ratio = np.sum(np.abs(trade_amounts)) / v_new
+            turnover_ratio = np.sum(np.abs(trade_amounts) * execution_prices) / v_new
             turnover_penalty = float(turnover_ratio)
 
         """ trade_amounts ví dụ như là 2000 | chỉ số log return thường thì nằm trong khoảng từ -0.05 đến 0.05 (mức biến động |5%|), turn_over_penalty"""
