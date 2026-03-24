@@ -27,7 +27,13 @@ features:
   - volume_norm
   - volatility_20d
 
-window_size: 60
+# ============================================================
+#  WINDOW SIZE
+#  30 la du cho LSTM bat pattern ngan-trung han.
+#  60 tang input size gap doi (60*16*9=8640) nhung khong
+#  cho them gia tri tuong xung, LSTM kho hoc hon.
+# ============================================================
+window_size: 30
 
 data_path: data/processed_v2
 
@@ -37,37 +43,92 @@ test_ratio: 0.15
 
 initial_balance: 1000000000
 fee_rate: 0.001
-max_steps_train: 756
+
+# ============================================================
+#  EPISODE LENGTH
+#  Giam tu 756 xuong 378 (~1.5 nam) de moi rollout 2048 steps
+#  chua 5-6 episodes hoan chinh -> GAE estimate on dinh hon.
+#  756 steps chi cho ~2.7 ep/rollout -> advantage qua noisy.
+# ============================================================
+max_steps_train: 378
 max_steps_eval: 9999
+
+# ============================================================
+#  REWARD FUNCTION
+#  - excess_scale 80 (tang tu 40): tin hieu excess return manh hon,
+#    agent phan biet ro allocation tot/xau.
+#  - turnover_scale 0.15 (giam tu 0.5): bot phat giao dich,
+#    agent duoc tu do rebalance khi can.
+#    0.5 khien agent SO giao dich -> giu uniform -> giong untrained.
+#  - drawdown_scale 1.5 (giam tu 2.0): bot conservative,
+#    cho phep chap nhan rui ro hop ly de dat return cao hon.
+# ============================================================
 reward_scaling: 1.0
 reward_name: sharpe
-reward_window: 30
+reward_window: 20
 reward_sharpe_scale: 1.0
-reward_excess_scale: 40.0
-reward_drawdown_scale: 2.0
-reward_turnover_scale: 0.5
-trade_deadband: 0.015
-max_weight_change_per_step: 0.10
+reward_excess_scale: 80.0
+reward_drawdown_scale: 1.5
+reward_turnover_scale: 0.15
 
+# ============================================================
+#  EXECUTION FILTERS
+#  trade_deadband 0.01 (giam tu 0.015): cho phep rebalance nho,
+#  agent co the fine-tune allocation.
+#  max_weight_change 0.15 (tang tu 0.10): cho phep thay doi
+#  portfolio nhanh hon khi co co hoi.
+# ============================================================
+trade_deadband: 0.01
+max_weight_change_per_step: 0.15
+
+# ============================================================
+#  MODEL (LSTM)
+# ============================================================
 hidden_size: 128
 num_layers: 2
 dropout: 0.1
 # Legacy key: giu lai de tuong thich nguoc, model hien tai khong con dung.
 log_std_init: -0.5
-dirichlet_total_concentration: 128.0
 
+# ============================================================
+#  DIRICHLET CONCENTRATION - THAY DOI QUAN TRONG NHAT
+#  128.0 (cu) -> moi alpha_i ~ 7.5 -> variance CUC KY NHO
+#  -> sample gan nhu luon bang mean -> KHONG EXPLORE DUOC
+#  -> policy bi lock vao near-uniform allocation vinh vien.
+#
+#  16.0 (moi) -> moi alpha_i ~ 0.94 -> variance vua du de
+#  explore nhung khong qua noisy. Policy co the hoc duoc
+#  su khac biet giua cac allocation strategy.
+# ============================================================
+dirichlet_total_concentration: 16.0
+
+# ============================================================
+#  PPO HYPERPARAMETERS
+# ============================================================
 learning_rate: 0.0003
 n_steps: 2048
-batch_size: 128
-n_epochs: 15
+# batch_size 256 (tang tu 128): 2048/256 = 8 minibatch/epoch
+# thay vi 16 -> giam over-fitting tren 1 rollout.
+batch_size: 256
+# n_epochs 10 (giam tu 15): bot over-fit tren cung 1 buffer.
+# 15 epochs x 16 minibatch = 240 grad steps qua nhieu.
+n_epochs: 10
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.25
-ent_coef: 0.0
+clip_range: 0.2
+# ent_coef 0.01 (tang tu 0.0): QUAN TRONG - khuyen khich
+# exploration. Khong co entropy bonus, ket hop voi
+# concentration cao -> policy khong bao gio escape uniform.
+ent_coef: 0.01
 vf_coef: 0.5
 max_grad_norm: 0.5
-target_kl: 0.04
+# target_kl 0.02 (giam tu 0.04): chan policy drift lon,
+# giu training on dinh hon.
+target_kl: 0.02
 
+# ============================================================
+#  TRAINING SCHEDULE
+# ============================================================
 total_timesteps: 600000
 lr_decay: true
 lr_schedule: cosine
@@ -75,7 +136,9 @@ min_learning_rate: 0.00003
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:
-  - 100
+  - 100000
+  - 300000
+  - 500000
 n_eval_episodes: 3
 
 seed: 42
