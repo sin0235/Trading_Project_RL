@@ -62,8 +62,8 @@ DEFAULT_CONFIG = {
     "reward_advanced_alpha": 0.1,
     "reward_advanced_beta": 0.5,
     "reward_advanced_gamma": 0.01,
-    "trade_deadband": 0.01,
-    "max_weight_change_per_step": 0.15,
+    "trade_deadband": 0.015,
+    "max_weight_change_per_step": 0.10,
 
     # --- Model (LSTM) ---
     "hidden_size": 128,

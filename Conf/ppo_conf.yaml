@@ -46,8 +46,8 @@ reward_sharpe_scale: 1.0
 reward_excess_scale: 40.0
 reward_drawdown_scale: 2.0
 reward_turnover_scale: 0.5
-trade_deadband: 0.02
-max_weight_change_per_step: 0.08
+trade_deadband: 0.015
+max_weight_change_per_step: 0.10
 
 hidden_size: 128
 num_layers: 2
