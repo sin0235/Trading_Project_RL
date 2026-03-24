@@ -120,6 +120,8 @@ class TradingEnv(gym.Env):
 
         if self.mode == "discrete":
             self.action_space = spaces.Discrete(self.k * self.n_stocks)
+        elif self.mode == "MultiDiscrete":
+            self.action_space = spaces.MultiDiscrete([self.k] * self.n_stocks)
         elif self.mode == "continuous":
             self.action_space = spaces.Box(
                 low=0, high=1.0,
@@ -217,6 +219,11 @@ class TradingEnv(gym.Env):
         "-------------------------------------ACTION-------------------------------------------"
         if self.mode == "discrete":
             action = self._normalize_discrete_action(action)
+            trade_amounts = decode_discrete_action(
+                action, self.n_stocks, self.min_shares, self.cash, self.holdings, execution_prices,
+                fee_rate=self.fee_rate,
+            )
+        elif self.mode == "MultiDiscrete":
             trade_amounts = decode_discrete_action(
                 action, self.n_stocks, self.min_shares, self.cash, self.holdings, execution_prices,
                 fee_rate=self.fee_rate,
@@ -430,7 +437,7 @@ class TradingEnv(gym.Env):
                 )
             )
         except TypeError:
-            return float(self.reward_fn.calculate(v_old, v_new, trade_amounts))
+            return float(self.reward_fn.calculate(v_old, v_new, trade_amounts, execution_prices))
 
     def _build_info(self, prices, trades=None, fees=0.0, execution_prices=None, turnover_ratio: float = 0.0):
         if execution_prices is None:

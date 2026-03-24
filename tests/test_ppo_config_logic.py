@@ -15,6 +15,7 @@ from src.training.PPO import (
     infer_run_config_from_checkpoint,
     is_periodic_trigger_step,
     load_ppo_config,
+    normalize_early_stop_baseline,
     normalize_checkpoint_milestones,
     next_periodic_trigger_step,
     next_checkpoint_milestone,
@@ -39,6 +40,8 @@ class PPOConfigLogicTests(unittest.TestCase):
                     reward_name: tmp
                     reward_excess_scale: 40.0
                     reward_turnover_scale: 0.5
+                    early_stop_patience_evals: 5
+                    early_stop_baseline: equal_weight
                     lr_schedule: linear
                     min_learning_rate: 0.00002
                     trade_deadband: 0.03
@@ -56,6 +59,8 @@ class PPOConfigLogicTests(unittest.TestCase):
             self.assertEqual(cfg["reward_name"], "tmp")
             self.assertEqual(cfg["reward_excess_scale"], 40.0)
             self.assertEqual(cfg["reward_turnover_scale"], 0.5)
+            self.assertEqual(cfg["early_stop_patience_evals"], 5)
+            self.assertEqual(cfg["early_stop_baseline"], "equal_weight")
             self.assertEqual(cfg["lr_schedule"], "linear")
             self.assertEqual(cfg["min_learning_rate"], 0.00002)
             self.assertEqual(cfg["trade_deadband"], 0.03)
@@ -112,12 +117,21 @@ class PPOConfigLogicTests(unittest.TestCase):
     def test_resolve_ppo_config_validates_execution_filters(self):
         with self.assertRaisesRegex(ValueError, "reward_excess_scale"):
             resolve_ppo_config(config={"reward_excess_scale": -1.0})
+        with self.assertRaisesRegex(ValueError, "early_stop_patience_evals"):
+            resolve_ppo_config(config={"early_stop_patience_evals": -1})
+        with self.assertRaisesRegex(ValueError, "early_stop_baseline"):
+            resolve_ppo_config(config={"early_stop_baseline": "foobar"})
         with self.assertRaisesRegex(ValueError, "trade_deadband"):
             resolve_ppo_config(config={"trade_deadband": -0.01})
         with self.assertRaisesRegex(ValueError, "max_weight_change_per_step"):
             resolve_ppo_config(config={"max_weight_change_per_step": 0.0})
         with self.assertRaisesRegex(ValueError, "dirichlet_total_concentration"):
             resolve_ppo_config(config={"dirichlet_total_concentration": -1.0})
+
+    def test_normalize_early_stop_baseline_supports_off_and_known_baselines(self):
+        self.assertIsNone(normalize_early_stop_baseline("off"))
+        self.assertIsNone(normalize_early_stop_baseline(None))
+        self.assertEqual(normalize_early_stop_baseline("equal_weight"), "equal_weight")
 
     def test_build_reward_kwargs_from_config_uses_sharpe_scales(self):
         cfg = resolve_ppo_config(

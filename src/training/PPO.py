@@ -153,6 +153,19 @@ def load_ppo_config(config_path: str | os.PathLike | None = None) -> dict:
     return cfg
 
 
+def normalize_early_stop_baseline(value) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "off", "none", "disable", "disabled", "false", "no"}:
+        return None
+    valid = {"equal_weight", "buy_and_hold_equal_weight"}
+    if normalized not in valid:
+        raise ValueError(
+            "early_stop_baseline không hợp lệ. Hỗ trợ: "
+            f"{sorted(valid)} hoặc off/none."
+        )
+    return normalized
+
+
 def resolve_ppo_config(config: dict | None = None,
                        config_path: str | os.PathLike | None = None) -> dict:
     yaml_cfg = load_ppo_config(config_path)
@@ -204,6 +217,24 @@ def resolve_ppo_config(config: dict | None = None,
         raise ValueError("dirichlet_total_concentration phải >= 0.")
     if resolved["total_timesteps"] <= 0:
         raise ValueError("total_timesteps phải > 0.")
+    for key in (
+        "early_stop_patience_evals",
+        "early_stop_min_evals",
+        "early_stop_baseline_patience_evals",
+    ):
+        value = resolved[key]
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} phải là số nguyên >= 0.") from exc
+        if numeric < 0 or not numeric.is_integer():
+            raise ValueError(f"{key} phải là số nguyên >= 0.")
+        resolved[key] = int(numeric)
+    if resolved["early_stop_min_delta"] < 0:
+        raise ValueError("early_stop_min_delta phải >= 0.")
+    resolved["early_stop_baseline"] = normalize_early_stop_baseline(
+        resolved.get("early_stop_baseline")
+    )
     resolved["milestone_checkpoint_steps"] = normalize_checkpoint_milestones(
         resolved.get("milestone_checkpoint_steps"),
         total_timesteps=resolved["total_timesteps"],
@@ -883,6 +914,17 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         )
         + f" | ent_coef={cfg['ent_coef']:.4f}"
     )
+    if cfg["early_stop_patience_evals"] > 0 or cfg["early_stop_baseline_patience_evals"] > 0:
+        logger.info(
+            "Run early stopping: "
+            f"min_evals={cfg['early_stop_min_evals']} | "
+            f"patience_evals={cfg['early_stop_patience_evals']} | "
+            f"min_delta={cfg['early_stop_min_delta']:.4f} | "
+            f"baseline={cfg['early_stop_baseline'] or 'off'} | "
+            f"baseline_patience_evals={cfg['early_stop_baseline_patience_evals']}"
+        )
+    else:
+        logger.info("Run early stopping: disabled")
     if cfg["milestone_checkpoint_steps"]:
         logger.info(f"Milestone checkpoints: {cfg['milestone_checkpoint_steps']}")
 
@@ -894,6 +936,13 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     obs = None
     latest_val_baselines = None
     rollout = 0
+    val_eval_count = 0
+    no_improve_evals = 0
+    below_baseline_evals = 0
+    stopped_early = False
+    early_stop_reason = None
+    early_stop_step = None
+    early_stop_episode = None
 
     save_dir = logger.get_run_dir() / "checkpoints"
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -1003,6 +1052,7 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
                 name: build_baseline_comparison(avg_val_metrics, metrics)
                 for name, metrics in val_baselines.items()
             }
+            val_eval_count += 1
             logger.log_eval(episode=episode_counter, metrics=avg_val_metrics, split="val", extra=val_diag)
             logger.info(f"\n{format_report(avg_val_metrics)}")
             logger.info(
@@ -1015,10 +1065,65 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             for name, metrics in val_baselines.items():
                 logger.info(format_baseline_comparison(name.upper(), avg_val_metrics, metrics))
 
-            if avg_val_metrics.get("sharpe_ratio", -np.inf) > best_val_sharpe:
-                best_val_sharpe = avg_val_metrics["sharpe_ratio"]
+            current_val_sharpe = float(avg_val_metrics.get("sharpe_ratio", -np.inf))
+            improved = current_val_sharpe > best_val_sharpe + cfg["early_stop_min_delta"]
+            if improved:
+                best_val_sharpe = current_val_sharpe
+                no_improve_evals = 0
                 agent.save(str(save_dir / "best_model.pt"))
                 logger.info(f"Best val Sharpe: {best_val_sharpe:.4f} -> saved best_model.pt")
+            else:
+                no_improve_evals += 1
+
+            baseline_label = cfg["early_stop_baseline"]
+            if baseline_label is not None:
+                baseline_metrics = val_baselines.get(baseline_label)
+                baseline_sharpe = float((baseline_metrics or {}).get("sharpe_ratio", -np.inf))
+                if current_val_sharpe > baseline_sharpe + cfg["early_stop_min_delta"]:
+                    below_baseline_evals = 0
+                else:
+                    below_baseline_evals += 1
+
+            if cfg["early_stop_patience_evals"] > 0 or cfg["early_stop_baseline_patience_evals"] > 0:
+                logger.info(
+                    "[EARLY_STOP] "
+                    f"eval_count={val_eval_count} | "
+                    f"no_improve_evals={no_improve_evals} | "
+                    f"below_baseline_evals={below_baseline_evals}"
+                )
+
+            if val_eval_count >= cfg["early_stop_min_evals"]:
+                if (
+                    cfg["early_stop_patience_evals"] > 0
+                    and no_improve_evals >= cfg["early_stop_patience_evals"]
+                ):
+                    stopped_early = True
+                    early_stop_reason = (
+                        "val_sharpe không cải thiện đủ "
+                        f"{cfg['early_stop_min_delta']:.4f} trong "
+                        f"{no_improve_evals} lần eval liên tiếp"
+                    )
+                elif (
+                    cfg["early_stop_baseline_patience_evals"] > 0
+                    and baseline_label is not None
+                    and below_baseline_evals >= cfg["early_stop_baseline_patience_evals"]
+                ):
+                    stopped_early = True
+                    early_stop_reason = (
+                        f"val_sharpe không vượt baseline '{baseline_label}' với biên "
+                        f"{cfg['early_stop_min_delta']:.4f} trong "
+                        f"{below_baseline_evals} lần eval liên tiếp"
+                    )
+
+            if stopped_early:
+                early_stop_step = int(agent.total_steps)
+                early_stop_episode = int(episode_counter)
+                save_step_checkpoint(agent.total_steps, "early_stop_snapshot")
+                logger.info(
+                    "[EARLY_STOP/TRIGGERED] "
+                    f"step={early_stop_step:,} | episode={early_stop_episode} | "
+                    f"reason={early_stop_reason}"
+                )
 
         if agent.total_steps in cfg["milestone_checkpoint_steps"]:
             save_step_checkpoint(agent.total_steps, "milestone_checkpoint")
@@ -1026,6 +1131,9 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         # Periodic checkpoint
         if is_periodic_trigger_step(agent.total_steps, cfg["save_freq"], cfg["n_steps"]):
             save_step_checkpoint(agent.total_steps, "periodic_checkpoint")
+
+        if stopped_early:
+            break
 
     # ----------------------------------------------------------------
     # 6. Final eval on test set (load best model)
@@ -1076,6 +1184,22 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
             "diagnostics": {
                 "last_rollout": rollout_diag,
                 "test": test_diag,
+            },
+            "early_stop": {
+                "enabled": bool(
+                    cfg["early_stop_patience_evals"] > 0
+                    or cfg["early_stop_baseline_patience_evals"] > 0
+                ),
+                "stopped": stopped_early,
+                "reason": early_stop_reason,
+                "step": early_stop_step,
+                "episode": early_stop_episode,
+                "val_eval_count": val_eval_count,
+                "no_improve_evals": no_improve_evals,
+                "below_baseline_evals": below_baseline_evals,
+                "baseline": cfg["early_stop_baseline"],
+                "min_delta": cfg["early_stop_min_delta"],
+                "min_evals": cfg["early_stop_min_evals"],
             },
         },
     )
