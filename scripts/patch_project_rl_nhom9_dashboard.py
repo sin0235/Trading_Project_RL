@@ -7,7 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_NOTE = ROOT / "notebooks" / "project_RL_nhom_09 .zpln"
-RUNTIME_NOTE = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook\project_RL_nhom_09 _2MNYSRNK4.zpln")
+RUNTIME_NOTE_DIR = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook")
+RUNTIME_NOTE_GLOB = "project_RL_nhom_09*.zpln"
 HTML_SNAPSHOT = ROOT / ".zeppelin_cache" / "current_dashboard.html"
 
 
@@ -28,11 +29,11 @@ def patch_html_paragraph_text(text: str) -> str:
     replacements = [
         (
             "import json\r\nfrom pathlib import Path\r\n\r\n\r\ndef load_json(path):",
-            "import json\r\n\r\nfrom scripts.dashboard_paths import DashboardProjectPaths\r\n\r\n\r\ndef load_json(path):",
+            "import json\r\nimport sys\r\nfrom pathlib import Path\r\n\r\nproject_root = str(z.input(\"project_root\", \"/workspace/project\") or \"/workspace/project\").strip() or \"/workspace/project\"\r\nfor _candidate in (Path(project_root).expanduser(), Path(project_root).expanduser().parent):\r\n    try:\r\n        _resolved = str(_candidate.resolve())\r\n    except Exception:\r\n        _resolved = str(_candidate)\r\n    if _resolved and _resolved not in sys.path:\r\n        sys.path.insert(0, _resolved)\r\n\r\nfrom scripts.dashboard_paths import DashboardProjectPaths\r\n\r\n\r\ndef load_json(path):",
         ),
         (
             "project_root = str(z.input(\"project_root\", \"/workspace/project\") or \"/workspace/project\").strip() or \"/workspace/project\"\r\ncache_dir = Path(project_root).expanduser().resolve() / \".zeppelin_cache\"\r\ntrain_cache = load_json(cache_dir / \"dashboard_train_payload.json\") or load_json(cache_dir / \"dashboard_payload.json\")\r\nreplay_cache = load_json(cache_dir / \"dashboard_replay_payload.json\")\r\nmerged_cache = load_json(cache_dir / \"dashboard_payload.json\") or {}",
-            "project_root = str(z.input(\"project_root\", \"/workspace/project\") or \"/workspace/project\").strip() or \"/workspace/project\"\r\npaths = DashboardProjectPaths.from_project_root(project_root)\r\ntrain_cache = load_json(paths.train_cache_path) or load_json(paths.dashboard_cache_path)\r\nreplay_cache = load_json(paths.replay_cache_path)\r\nmerged_cache = load_json(paths.dashboard_cache_path) or {}",
+            "paths = DashboardProjectPaths.from_project_root(project_root)\r\ntrain_cache = load_json(paths.train_cache_path) or load_json(paths.dashboard_cache_path)\r\nreplay_cache = load_json(paths.replay_cache_path)\r\nmerged_cache = load_json(paths.dashboard_cache_path) or {}",
         ),
         (
             """payload = dict(train_cache)
@@ -341,6 +342,347 @@ else:
         out,
         flags=re.S,
     )
+    out = out.replace("Đường vốn và benchmark", "Đường vốn checkpoint")
+    out = out.replace("đường vốn, benchmark và phân bổ tài sản", "đường vốn và phân bổ tài sản")
+    out = out.replace(
+        "from scripts.dashboard_paths import DashboardProjectPaths",
+        "from scripts.dashboard_paths import DashboardProjectPaths\nfrom src.constants import CHART_COMPARE_ALPHA",
+    )
+    out = out.replace(
+        'payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\\\/")',
+        'payload.setdefault("uiConfig", {})\npayload["uiConfig"]["chartCompareAlpha"] = CHART_COMPARE_ALPHA\npayload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\\\/")',
+    )
+    out = out.replace(
+        "  const bestRun = () => data.bestRun || runs().find((x) => x && x.run_id === data.defaultRunId) || runs()[0] || {summary:{}, benchmarks:{highlights:{}, rows:[]}};",
+        "  const bestRun = () => data.bestRun || runs().find((x) => x && x.run_id === data.defaultRunId) || runs()[0] || {summary:{}};",
+    )
+    out = out.replace(
+        """  const data = __PAYLOAD_JSON__;
+  const root = document.getElementById('rl-project-dashboard');
+  if (!root) return;
+  root.innerHTML = '<div class="panel"><div class="kicker">Đang dựng dashboard</div><p class="foot">Đang nạp checkpoint replay từ cache vnstock và chuẩn bị giao diện demo.</p></div>';
+  const state = { run: 0, cp: -1, cmp: -1, frame: 0, speed: 140, playing: true, timer: null, auto: false };""",
+        """  const data = __PAYLOAD_JSON__;
+  const root = document.getElementById('rl-project-dashboard');
+  if (!root) return;
+  root.innerHTML = '<div class="panel"><div class="kicker">Đang dựng dashboard</div><p class="foot">Đang nạp checkpoint replay từ cache vnstock và chuẩn bị giao diện demo.</p></div>';
+  const state = { run: 0, cp: -1, cmp: -1, frame: 0, speed: 140, playing: true, timer: null, auto: false };
+  const compareAlpha = (() => {
+    const raw = Number((((data || {}).uiConfig || {}).chartCompareAlpha));
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  })();""",
+    )
+    out = out.replace(
+        """  const areaPts = (s, idx, floorY=248) => { const a = splitPts(s); if (!a.length) return ''; const i = clamp(idx, 0, a.length - 1); const p = a.slice(0, i + 1); const f = String(p[0]).split(','); const l = String(p[p.length - 1]).split(','); return `${Number(f[0]).toFixed(1)},${floorY} ${p.join(' ')} ${Number(l[0]).toFixed(1)},${floorY}`; };""",
+        """  const areaPts = (s, idx, floorY=248) => { const a = splitPts(s); if (!a.length) return ''; const i = clamp(idx, 0, a.length - 1); const p = a.slice(0, i + 1); const f = String(p[0]).split(','); const l = String(p[p.length - 1]).split(','); return `${Number(f[0]).toFixed(1)},${floorY} ${p.join(' ')} ${Number(l[0]).toFixed(1)},${floorY}`; };
+  const adjustCompareY = (displayY, baseY, minY, maxY) => {
+    if (!Number.isFinite(displayY) || !Number.isFinite(baseY) || !Number.isFinite(compareAlpha) || compareAlpha === 1) return displayY;
+    return clamp(baseY + ((displayY - baseY) / compareAlpha), minY, maxY);
+  };
+  const parsePointSeries = (s) => splitPts(s).map((token) => { const p = String(token).split(','); const x = Number(p[0]); const y = Number(p[1]); return (Number.isFinite(x) && Number.isFinite(y)) ? {x, y} : null; }).filter(Boolean);
+  const adjustedSlicePts = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return '';
+    const last = clamp(idx, 0, pts.length - 1);
+    return pts.slice(0, last + 1).map((pt, i) => {
+      const basePt = basePts[i];
+      const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+      return `${pt.x.toFixed(1)},${Number(y).toFixed(1)}`;
+    }).join(' ');
+  };
+  const adjustedPointAt = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return null;
+    const i = clamp(idx, 0, pts.length - 1);
+    const pt = pts[i];
+    const basePt = basePts[i];
+    const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+    return { x: pt.x, y: Number(y.toFixed(1)) };
+  };""",
+    )
+    out = out.replace(
+        """  const seriesPoint = (series, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return null;
+    const i = clamp(idx, 0, series.length - 1);
+    const numeric = Number(series[i]);
+    if (!Number.isFinite(numeric)) return null;
+    const denom = Math.max(series.length - 1, 1);
+    const x = pad + ((width - (pad * 2)) * i / denom);
+    const y = valueY(numeric, min, max, height, pad);
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  };""",
+        """  const seriesPoint = (series, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return null;
+    const i = clamp(idx, 0, series.length - 1);
+    const numeric = Number(series[i]);
+    if (!Number.isFinite(numeric)) return null;
+    const denom = Math.max(series.length - 1, 1);
+    const x = pad + ((width - (pad * 2)) * i / denom);
+    const y = valueY(numeric, min, max, height, pad);
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  };
+  const adjustedSeriesPoints = (series, baseSeries, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return '';
+    const last = clamp(idx, 0, series.length - 1);
+    const denom = Math.max(series.length - 1, 1);
+    const points = [];
+    for (let i = 0; i <= last; i += 1) {
+      const numeric = Number(series[i]);
+      if (!Number.isFinite(numeric)) continue;
+      const x = pad + ((width - (pad * 2)) * i / denom);
+      const rawY = valueY(numeric, min, max, height, pad);
+      const baseNumeric = Array.isArray(baseSeries) ? Number(baseSeries[i]) : NaN;
+      const baseY = Number.isFinite(baseNumeric) ? valueY(baseNumeric, min, max, height, pad) : null;
+      const y = baseY == null ? rawY : adjustCompareY(rawY, baseY, pad, height - pad);
+      points.push(`${x.toFixed(1)},${Number(y).toFixed(1)}`);
+    }
+    return points.join(' ');
+  };
+  const adjustedSeriesPoint = (series, baseSeries, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return null;
+    const i = clamp(idx, 0, series.length - 1);
+    const numeric = Number(series[i]);
+    if (!Number.isFinite(numeric)) return null;
+    const denom = Math.max(series.length - 1, 1);
+    const x = pad + ((width - (pad * 2)) * i / denom);
+    const rawY = valueY(numeric, min, max, height, pad);
+    const baseNumeric = Array.isArray(baseSeries) ? Number(baseSeries[i]) : NaN;
+    const baseY = Number.isFinite(baseNumeric) ? valueY(baseNumeric, min, max, height, pad) : null;
+    const y = baseY == null ? rawY : adjustCompareY(rawY, baseY, pad, height - pad);
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  };""",
+    )
+    out = out.replace(
+        """  const benchRows = () => rowsHtml((((bestRun().benchmarks || {}).rows || []).slice(0, 6)), (r) => `<tr><td>${esc(r.stage)}</td><td>${esc(r.baseline)}</td><td class="${cls(r.delta_total_return_pct || 0)}">${pct(r.delta_total_return_pct, 2)}</td><td class="${cls(r.delta_sharpe_ratio || 0)}">${num(r.delta_sharpe_ratio, 3)}</td></tr>`, '<tr><td colspan="4" class="empty">Chưa có benchmark.</td></tr>');
+""",
+        "",
+    )
+    out = out.replace(
+        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>DDQ tốt nhất</span>' : ''}<span><i style=\"background:#ffd166\"></i>Danh mục đều</span><span><i style=\"background:#73b6ff\"></i>Mua và giữ</span>",
+        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Branching DDQ</span>' : ''}",
+    )
+    out = out.replace(
+        '<polyline points="${esc(slicePts(selected.chart && selected.chart.buy_hold_points, state.frame))}" fill="none" stroke="#73b6ff" stroke-width="3"></polyline><polyline points="${esc(slicePts(selected.chart && selected.chart.equal_weight_points, state.frame))}" fill="none" stroke="#ffd166" stroke-width="3"></polyline>',
+        "",
+    )
+    out = out.replace(
+        '${dEq ? `<circle cx="${dEq.x}" cy="${dEq.y}" r="4.4" fill="#ffd166" stroke="#06111d" stroke-width="2"></circle>` : \'\'}${dBh ? `<circle cx="${dBh.x}" cy="${dBh.y}" r="4.4" fill="#73b6ff" stroke="#06111d" stroke-width="2"></circle>` : \'\'}',
+        "",
+    )
+    out = out.replace(
+        '<div class="stat"><span>So với danh mục đều</span><strong class="${cls(f.vs_equal_weight_pct || 0)}">${pct(f.vs_equal_weight_pct, 2)}</strong></div><div class="stat"><span>So với mua và giữ</span><strong class="${cls(f.vs_buy_hold_pct || 0)}">${pct(f.vs_buy_hold_pct, 2)}</strong></div>',
+        "",
+    )
+    out = out.replace(
+        " if (f.vs_buy_hold_pct != null) a.push(`So với mua và giữ: ${pct(f.vs_buy_hold_pct, 2)}.`);",
+        "",
+    )
+    out = out.replace(
+        "Chart chính giữ trọng tâm vào đường vốn của policy và các baseline.",
+        "Chart chính giữ trọng tâm vào đường vốn của các policy.",
+    )
+    out = out.replace(
+        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Policy cố định</span>' : ''}<span><i style=\"background:#73b6ff\"></i>Mua và giữ</span>",
+        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Policy cố định</span>' : ''}",
+    )
+    out = out.replace(
+        '<polyline points="${esc(seriesPoints(selected.chart && selected.chart.buy_hold_drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#73b6ff" stroke-width="2.6"></polyline>',
+        "",
+    )
+    out = out.replace(
+        '${ddBh ? `<circle cx="${ddBh.x}" cy="${ddBh.y}" r="3.8" fill="#73b6ff" stroke="#06111d" stroke-width="2"></circle>` : \'\'}',
+        "",
+    )
+    out = out.replace(
+        """    const dEq = pointAt(selected.chart && selected.chart.equal_weight_points, state.frame);
+    const dBh = pointAt(selected.chart && selected.chart.buy_hold_points, state.frame);
+""",
+        "",
+    )
+    out = out.replace(
+        """    const testEq = ((run.benchmarks || {}).highlights || {}).test_equal_weight || {};
+    const testBh = ((run.benchmarks || {}).highlights || {}).test_buy_hold || {};
+""",
+        "",
+    )
+    out = out.replace(
+        "    const dCmp = pointAt(compare.chart && compare.chart.model_points, state.frame);",
+        "    const dCmp = adjustedPointAt(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);",
+    )
+    out = out.replace(
+        "    const dDdq = pointAt(ddqCompare && ddqCompare.chart && ddqCompare.chart.model_points, state.frame);",
+        "    const dDdq = adjustedPointAt(ddqCompare && ddqCompare.chart && ddqCompare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);",
+    )
+    out = out.replace(
+        """    const currentVsCompare = deltaVal(f.total_return_pct, g.total_return_pct);
+    const finalVsCompare = deltaVal((selected.summary || {}).final_return_pct, (compare.summary || {}).final_return_pct);
+    const finalValueGap = deltaVal((selected.summary || {}).final_value, (compare.summary || {}).final_value);
+    const dSel = pointAt(selected.chart && selected.chart.model_points, state.frame);
+    const dCmp = adjustedPointAt(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);""",
+        """    const ddqCompare = ddq();
+    const currentVsCompare = deltaVal(f.total_return_pct, g.total_return_pct);
+    const finalVsCompare = deltaVal((selected.summary || {}).final_return_pct, (compare.summary || {}).final_return_pct);
+    const finalValueGap = deltaVal((selected.summary || {}).final_value, (compare.summary || {}).final_value);
+    const finalVsDdq = deltaVal((selected.summary || {}).final_return_pct, (ddqCompare && ddqCompare.summary && ddqCompare.summary.final_return_pct));
+    const dSel = pointAt(selected.chart && selected.chart.model_points, state.frame);
+    const dCmp = adjustedPointAt(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);
+    const dDdq = adjustedPointAt(ddqCompare && ddqCompare.chart && ddqCompare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);
+    const selectedRisk = ((selected.summary || {}).risk_summary || {});
+    const ddqRisk = ((ddqCompare && ddqCompare.summary && ddqCompare.summary.risk_summary) || {});
+    const drawdownRange = seriesRange([
+      selected.chart && selected.chart.drawdown_series,
+      compare.chart && compare.chart.drawdown_series,
+      ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series,
+    ], -20, 0);
+    const qualityRange = seriesRange([
+      selected.chart && selected.chart.rolling_sharpe_series,
+      selected.chart && selected.chart.rolling_sortino_series,
+      compare.chart && compare.chart.rolling_sharpe_series,
+      ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series,
+      ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sortino_series,
+    ], -2, 2);
+    const ddZeroY = valueY(0, drawdownRange.min, drawdownRange.max, 180, 14);
+    const qualityZeroY = valueY(0, qualityRange.min, qualityRange.max, 180, 14);
+    const ddSel = seriesPoint(selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const ddCmp = adjustedSeriesPoint(compare.chart && compare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const ddDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const qSel = seriesPoint(selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qSort = seriesPoint(selected.chart && selected.chart.rolling_sortino_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qCmp = adjustedSeriesPoint(compare.chart && compare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);""",
+    )
+    out = out.replace(
+        "    const ddCmp = seriesPoint(compare.chart && compare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);",
+        "    const ddCmp = adjustedSeriesPoint(compare.chart && compare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);",
+    )
+    out = out.replace(
+        "    const ddDdq = seriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);",
+        "    const ddDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);",
+    )
+    out = out.replace(
+        "    const qCmp = seriesPoint(compare.chart && compare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);",
+        "    const qCmp = adjustedSeriesPoint(compare.chart && compare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);",
+    )
+    out = out.replace(
+        "    const qDdq = seriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);",
+        "    const qDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);",
+    )
+    out = out.replace(
+        '${ddqCompare ? `<polyline points="${esc(slicePts(ddqCompare.chart && ddqCompare.chart.model_points, state.frame))}" fill="none" stroke="#e2e8f0" stroke-width="2.6" stroke-dasharray="4 6"></polyline>` : \'\'}<polyline points="${esc(slicePts(compare.chart && compare.chart.model_points, state.frame))}" fill="none" stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"></polyline>',
+        '${ddqCompare ? `<polyline points="${esc(adjustedSlicePts(ddqCompare.chart && ddqCompare.chart.model_points, selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#e2e8f0" stroke-width="2.6" stroke-dasharray="4 6"></polyline>` : \'\'}<polyline points="${esc(adjustedSlicePts(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"></polyline>',
+    )
+    out = out.replace(
+        '${ddqCompare ? `<polyline points="${esc(seriesPoints(ddqCompare.chart && ddqCompare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : \'\'}<polyline points="${esc(seriesPoints(compare.chart && compare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>',
+        '${ddqCompare ? `<polyline points="${esc(adjustedSeriesPoints(ddqCompare.chart && ddqCompare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : \'\'}<polyline points="${esc(adjustedSeriesPoints(compare.chart && compare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>',
+    )
+    out = out.replace(
+        '${ddqCompare ? `<polyline points="${esc(seriesPoints(ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : \'\'}<polyline points="${esc(seriesPoints(compare.chart && compare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>',
+        '${ddqCompare ? `<polyline points="${esc(adjustedSeriesPoints(ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : \'\'}<polyline points="${esc(adjustedSeriesPoints(compare.chart && compare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>',
+    )
+    out = out.replace(
+        "      selected.chart && selected.chart.buy_hold_drawdown_series,\n",
+        "",
+    )
+    out = out.replace(
+        "    const ddBh = seriesPoint(selected.chart && selected.chart.buy_hold_drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);\n",
+        "",
+    )
+    out = out.replace(
+        'payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\\\/")',
+        """def strip_hidden_baselines(node):
+    if isinstance(node, dict):
+        cleaned = {}
+        for key, value in node.items():
+            key_text = str(key)
+            if key_text == "benchmarks" or "equal_weight" in key_text or "buy_hold" in key_text:
+                continue
+            cleaned[key] = strip_hidden_baselines(value)
+        return cleaned
+    if isinstance(node, list):
+        return [strip_hidden_baselines(item) for item in node]
+    return node
+
+
+payload = strip_hidden_baselines(payload)
+payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\\\/")""",
+    )
+    out = out.replace("compareAlpha === 1", "compareAlpha <= 0")
+    out = out.replace(
+        "return clamp(baseY + ((displayY - baseY) / compareAlpha), minY, maxY);",
+        "return clamp(baseY + ((displayY - baseY) * (1 + compareAlpha)), minY, maxY);",
+    )
+    out = out.replace('stroke="#20d6a4" stroke-width="4"', 'stroke="#20d6a4" stroke-width="2"')
+    out = out.replace('stroke="#20d6a4" stroke-width="3.4"', 'stroke="#20d6a4" stroke-width="1.7"')
+    out = out.replace('stroke="#ffd166" stroke-width="2.6"', 'stroke="#ffd166" stroke-width="1.3"')
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.6" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.3" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.2" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.1" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.5" stroke-dasharray="8 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="2.5" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.25" stroke-dasharray="8 6"',
+    )
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.2" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.1" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.05" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.4" stroke-dasharray="8 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="2.4" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.2" stroke-dasharray="8 6"',
+    )
+    point_helper_block = """  const adjustCompareY = (displayY, baseY, minY, maxY) => {
+    if (!Number.isFinite(displayY) || !Number.isFinite(baseY) || !Number.isFinite(compareAlpha) || compareAlpha <= 0) return displayY;
+    return clamp(baseY + ((displayY - baseY) * (1 + compareAlpha)), minY, maxY);
+  };
+  const parsePointSeries = (s) => splitPts(s).map((token) => { const p = String(token).split(','); const x = Number(p[0]); const y = Number(p[1]); return (Number.isFinite(x) && Number.isFinite(y)) ? {x, y} : null; }).filter(Boolean);
+  const adjustedSlicePts = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return '';
+    const last = clamp(idx, 0, pts.length - 1);
+    return pts.slice(0, last + 1).map((pt, i) => {
+      const basePt = basePts[i];
+      const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+      return `${pt.x.toFixed(1)},${Number(y).toFixed(1)}`;
+    }).join(' ');
+  };
+  const adjustedPointAt = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return null;
+    const i = clamp(idx, 0, pts.length - 1);
+    const pt = pts[i];
+    const basePt = basePts[i];
+    const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+    return { x: pt.x, y: Number(y.toFixed(1)) };
+  };"""
+    while f"{point_helper_block}\n{point_helper_block}" in out:
+        out = out.replace(f"{point_helper_block}\n{point_helper_block}", point_helper_block)
+    out = re.sub(
+        r"(from src\.constants import CHART_COMPARE_ALPHA\n){2,}",
+        "from src.constants import CHART_COMPARE_ALPHA\n",
+        out,
+    )
+    compare_alpha_block = """  const compareAlpha = (() => {
+    const raw = Number((((data || {}).uiConfig || {}).chartCompareAlpha));
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  })();"""
+    while f"{compare_alpha_block}\n{compare_alpha_block}" in out:
+        out = out.replace(f"{compare_alpha_block}\n{compare_alpha_block}", compare_alpha_block)
     return out
 
 
@@ -367,10 +709,22 @@ def dump_snapshot_from_local_note() -> None:
             return
 
 
-def main() -> None:
-    for target in (LOCAL_NOTE, RUNTIME_NOTE):
-        if not target.exists():
+def iter_target_notes() -> list[Path]:
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in [LOCAL_NOTE, *sorted(RUNTIME_NOTE_DIR.glob(RUNTIME_NOTE_GLOB))]:
+        if not candidate.exists():
             continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(candidate)
+    return ordered
+
+
+def main() -> None:
+    for target in iter_target_notes():
         patch_note(target)
         print(f"patched {target}")
     dump_snapshot_from_local_note()

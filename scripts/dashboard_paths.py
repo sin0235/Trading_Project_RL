@@ -5,15 +5,24 @@ from pathlib import Path
 
 
 # Đặt None để helper tự chọn best PPO run theo score.
-FIXED_PPO_REPLAY_RUN_ID: str | None = "ppo_20260323_104833"
+FIXED_PPO_REPLAY_RUN_ID: str | None = "ppo_20260324_044152"
+FIXED_PPO_REPLAY_DEFAULT_CHECKPOINT_ID: str | None = "final_model"
+
+# Replay defaults: mọi helper/cell dashboard phải dùng chung bộ này.
+REPLAY_RECENT_MONTHS_DEFAULT = 12
+REPLAY_WARMUP_MONTHS_DEFAULT = 4
+REPLAY_RUN_LIMIT_DEFAULT = 1
+REPLAY_CHECKPOINT_SAMPLES_DEFAULT = 6
+REPLAY_VNSTOCK_SOURCE_DEFAULT = "VCI"
+REPLAY_END_DATE_DEFAULT = "2026-02-25"
+REPLAY_MAX_FRAMES_DEFAULT = 420
+REPLAY_PAYLOAD_SCHEMA_VERSION = 2
 
 # Thư mục cố định cho line compare DDQ trên dashboard.
-# Bạn chỉ cần thả checkpoint vào đúng chỗ này:
-#   results/compare/ddq_best/checkpoints/best_model.pt
-# hoặc:
-#   results/compare/ddq_best/best_model.pt
-DDQ_COMPARE_DIRNAME = "ddq_best"
-DDQ_COMPARE_LABEL = "DDQ tốt nhất"
+# Hiện dashboard lấy line so sánh từ:
+#   results/compare/BranchingDDQ_LSTM/BranchingDDQ.pt
+DDQ_COMPARE_DIRNAME = "BranchingDDQ_LSTM"
+DDQ_COMPARE_LABEL = "Branching DDQ"
 
 
 @dataclass(frozen=True)
@@ -106,6 +115,7 @@ class DashboardProjectPaths:
         for root in self.ddq_compare_artifact_roots:
             candidates.extend(
                 [
+                    root / "BranchingDDQ.pt",
                     root / "checkpoints" / "best_model.pt",
                     root / "best_model.pt",
                     root / "checkpoints" / "final_model.pt",
@@ -120,6 +130,7 @@ class DashboardProjectPaths:
         for root in self.ddq_compare_artifact_roots:
             candidates.extend(
                 [
+                    root / "config_active.json",
                     root / "config.json",
                     root / "run_config.json",
                     root / "summary.json",

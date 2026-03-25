@@ -13,7 +13,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from src.models.lstm import DRQNNetwork, PPOLSTMActorCritic
+import torch.nn as nn
+from src.models.lstm import DRQNNetwork, LSTMFeatureExtractor, PPOLSTMActorCritic
 from src.environment.trading_env import TradingEnv
 from src.training.DDQ import (
     infer_run_config_from_checkpoint as infer_ddq_run_config_from_checkpoint,
@@ -31,11 +32,18 @@ from src.data.download_data import DownloadData
 from src.utils.metrics import compute_all
 from scripts.dashboard_paths import (
     DDQ_COMPARE_LABEL,
+    FIXED_PPO_REPLAY_DEFAULT_CHECKPOINT_ID,
     FIXED_PPO_REPLAY_RUN_ID,
     DashboardProjectPaths,
+    REPLAY_CHECKPOINT_SAMPLES_DEFAULT,
+    REPLAY_END_DATE_DEFAULT,
+    REPLAY_MAX_FRAMES_DEFAULT,
+    REPLAY_PAYLOAD_SCHEMA_VERSION,
+    REPLAY_RECENT_MONTHS_DEFAULT,
+    REPLAY_RUN_LIMIT_DEFAULT,
+    REPLAY_VNSTOCK_SOURCE_DEFAULT,
+    REPLAY_WARMUP_MONTHS_DEFAULT,
 )
-
-REPLAY_PAYLOAD_SCHEMA_VERSION = 2
 MIN_COMMON_REPLAY_DAYS = 10
 FALLBACK_CACHE_SOURCE = "fallback-cache"
 UNTRAINED_REPLAY_CHECKPOINT_ID = "seed42_untrained"
@@ -255,6 +263,36 @@ def _untrained_replay_checkpoint(run_dir: str | Path) -> dict[str, Any]:
     }
 
 
+def _resolve_current_replay_checkpoint(checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
+    if not checkpoints:
+        raise ValueError("Danh sách checkpoint replay đang rỗng.")
+
+    checkpoint_map = {
+        str(item.get("checkpoint_id") or "").strip(): item
+        for item in checkpoints
+        if isinstance(item, dict)
+    }
+    requested_id = str(FIXED_PPO_REPLAY_DEFAULT_CHECKPOINT_ID or "").strip()
+    if requested_id:
+        requested = checkpoint_map.get(requested_id)
+        if requested is not None:
+            return requested
+
+    final_checkpoint = checkpoint_map.get("final_model")
+    if final_checkpoint is not None:
+        return final_checkpoint
+
+    numeric_items = [item for item in checkpoints if item.get("kind") == "numeric"]
+    if numeric_items:
+        return max(numeric_items, key=lambda item: int(item.get("step") or -1))
+
+    best_checkpoint = checkpoint_map.get("best_model")
+    if best_checkpoint is not None:
+        return best_checkpoint
+
+    return checkpoints[0]
+
+
 def select_replay_checkpoints(run_dir: str | Path, numeric_count: int = 4) -> list[dict[str, Any]]:
     run_path = Path(run_dir)
     checkpoint_dirs = [run_path / "checkpoints", run_path]
@@ -280,7 +318,7 @@ def select_replay_checkpoints(run_dir: str | Path, numeric_count: int = 4) -> li
 
     for file_name, candidate_id, label in (
         ("best_model.pt", "best_model", "Checkpoint tốt nhất"),
-        ("final_model.pt", "final_model", "Checkpoint cuối"),
+        ("final_model.pt", "final_model", "Checkpoint hiện tại"),
     ):
         path = checkpoint_dir / file_name
         if path.exists():
@@ -446,11 +484,94 @@ def _detect_compare_artifact_agent(project_root: str | Path, checkpoint_path: Pa
     state_dict = payload.get("model_state_dict")
     if not isinstance(state_dict, dict):
         return ""
-    if "advantage_stream.2.bias" in state_dict:
+    if "advantage_stream.2.bias" in state_dict or "advantage_streams.0.2.bias" in state_dict:
         return "DDQ_LSTM"
     if "actor_head.5.bias" in state_dict:
         return "PPO_LSTM"
     return ""
+
+
+class BranchingDRQNNetwork(nn.Module):
+    """Biến thể Branching DDQ dùng vector action per-stock cho replay compare."""
+
+    def __init__(
+        self,
+        n_stocks: int,
+        n_features: int,
+        seq_len: int,
+        hidden_size: int,
+        num_layers: int,
+        dropout: float,
+        k: int,
+    ) -> None:
+        super().__init__()
+        self.n_stocks = int(n_stocks)
+        self.n_features = int(n_features)
+        self.seq_len = int(seq_len)
+        self.hidden_size = int(hidden_size)
+        self.k = int(k)
+
+        input_size = self.n_stocks * self.n_features
+        portfolio_dim = 1 + self.n_stocks
+        combined_dim = self.hidden_size + portfolio_dim
+
+        self.feature_extractor = LSTMFeatureExtractor(
+            input_size=input_size,
+            hidden_size=self.hidden_size,
+            num_layers=int(num_layers),
+            dropout=float(dropout),
+        )
+        self.shared_fc = nn.Sequential(
+            nn.Linear(combined_dim, self.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(float(dropout)),
+        )
+        self.value_stream = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(self.hidden_size // 2, 1),
+        )
+        self.advantage_streams = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(self.hidden_size, self.hidden_size // 2),
+                    nn.ReLU(),
+                    nn.Linear(self.hidden_size // 2, self.k),
+                )
+                for _ in range(self.n_stocks)
+            ]
+        )
+
+    def forward(
+        self,
+        market_state: torch.Tensor,
+        portfolio_state: torch.Tensor,
+        hidden: tuple | None = None,
+    ) -> tuple[torch.Tensor, tuple]:
+        if market_state.dim() == 4:
+            batch_size, seq_len, n_stocks, n_features = market_state.shape
+            market_state = market_state.view(batch_size, seq_len, n_stocks * n_features)
+        features, new_hidden = self.feature_extractor(market_state, hidden)
+        combined = torch.cat([features, portfolio_state], dim=-1)
+        shared = self.shared_fc(combined)
+        value = self.value_stream(shared).unsqueeze(-1)
+        advantages = torch.stack([stream(shared) for stream in self.advantage_streams], dim=1)
+        q_values = value + advantages - advantages.mean(dim=-1, keepdim=True)
+        return q_values, new_hidden
+
+    def select_action(
+        self,
+        market_state: torch.Tensor,
+        portfolio_state: torch.Tensor,
+        hidden: tuple | None = None,
+        epsilon: float = 0.0,
+    ) -> tuple[np.ndarray, tuple]:
+        q_values, new_hidden = self.forward(market_state, portfolio_state, hidden=hidden)
+        if float(epsilon) > 0.0 and float(np.random.rand()) < float(epsilon):
+            action = np.random.randint(0, self.k, size=(self.n_stocks,), dtype=np.int64)
+            return action, new_hidden
+        greedy = q_values.argmax(dim=-1).squeeze(0).detach().cpu().numpy().astype(np.int64)
+        return greedy, new_hidden
 
 
 def _load_ddq_compare_config(
@@ -869,6 +990,7 @@ class DatasetBundle:
     data_dict: dict[str, pd.DataFrame]
     data_source: str
     source_label: str
+    recent_months: int
     display_start: str
     display_end: str
     n_days: int
@@ -886,8 +1008,11 @@ def _build_recent_dataset(
     vnstock_source: str,
     end_date: str | None = None,
 ) -> DatasetBundle:
-    today = pd.Timestamp(end_date or "2026-02-28")
-    effective_recent_months = max(int(recent_months), 12 if int(window_size) >= 60 else 4)
+    today = pd.Timestamp(end_date or REPLAY_END_DATE_DEFAULT)
+    effective_recent_months = max(
+        int(recent_months),
+        REPLAY_RECENT_MONTHS_DEFAULT if int(window_size) >= 60 else 4,
+    )
     display_start = today - pd.Timedelta(days=effective_recent_months * 31)
     feature_buffer_days = max(int(window_size) * 2, 120)
     requested_buffer_days = max(effective_recent_months + warmup_months, 2) * 31
@@ -943,6 +1068,7 @@ def _build_recent_dataset(
         data_dict=trimmed,
         data_source=source_name,
         source_label=source_label,
+        recent_months=int(effective_recent_months),
         display_start=start_str,
         display_end=end_str,
         n_days=n_days,
@@ -981,8 +1107,19 @@ def _build_model(config: dict[str, Any], checkpoint_info: dict[str, Any]) -> PPO
     return model
 
 
-def _build_ddq_model(config: dict[str, Any], checkpoint_path: Path) -> DRQNNetwork:
-    model = DRQNNetwork(
+def _build_ddq_model(config: dict[str, Any], checkpoint_path: Path) -> DRQNNetwork | BranchingDRQNNetwork:
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    state_dict = payload.get("model_state_dict")
+    if not isinstance(state_dict, dict):
+        raise ValueError(f"Checkpoint DDQ không chứa model_state_dict hợp lệ: {checkpoint_path}")
+
+    model_cls: type[DRQNNetwork] | type[BranchingDRQNNetwork]
+    if any(key.startswith("advantage_streams.") for key in state_dict):
+        model_cls = BranchingDRQNNetwork
+    else:
+        model_cls = DRQNNetwork
+
+    model = model_cls(
         n_stocks=len(config["tickers"]),
         n_features=len(config["features"]),
         seq_len=int(config["window_size"]),
@@ -991,11 +1128,6 @@ def _build_ddq_model(config: dict[str, Any], checkpoint_path: Path) -> DRQNNetwo
         dropout=float(config["dropout"]),
         k=int(config.get("k", 3)),
     )
-
-    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state_dict = payload.get("model_state_dict")
-    if not isinstance(state_dict, dict):
-        raise ValueError(f"Checkpoint DDQ không chứa model_state_dict hợp lệ: {checkpoint_path}")
     model.load_state_dict(state_dict)
     model.eval()
     return model
@@ -1242,7 +1374,7 @@ def _run_episode_replay(
 
 def _run_ddq_episode_values_only(
     env: TradingEnv,
-    model: DRQNNetwork,
+    model: DRQNNetwork | BranchingDRQNNetwork,
     start_t: int,
 ) -> list[float]:
     obs, _ = env.reset(options={"start_t": start_t})
@@ -1260,7 +1392,11 @@ def _run_ddq_episode_values_only(
                 hidden=None,
                 epsilon=0.0,
             )
-        obs, _reward, terminated, truncated, _info = env.step(int(action))
+        if np.isscalar(action):
+            env_action: int | np.ndarray = int(action)
+        else:
+            env_action = np.asarray(action, dtype=np.int64)
+        obs, _reward, terminated, truncated, _info = env.step(env_action)
         done = bool(terminated or truncated)
         values.append(float(env.portfolio_value))
 
@@ -1762,13 +1898,13 @@ def build_checkpoint_replay_payload(
     project_root: str | Path,
     results_dir: str | Path | None = None,
     data_dir: str | Path | None = None,
-    recent_months: int = 12,
-    warmup_months: int = 4,
-    run_limit: int = 1,
-    checkpoint_samples: int = 4,
-    vnstock_source: str = "VCI",
-    end_date: str | None = "2026-02-28",
-    max_frames_per_checkpoint: int | None = 420,
+    recent_months: int = REPLAY_RECENT_MONTHS_DEFAULT,
+    warmup_months: int = REPLAY_WARMUP_MONTHS_DEFAULT,
+    run_limit: int = REPLAY_RUN_LIMIT_DEFAULT,
+    checkpoint_samples: int = REPLAY_CHECKPOINT_SAMPLES_DEFAULT,
+    vnstock_source: str = REPLAY_VNSTOCK_SOURCE_DEFAULT,
+    end_date: str | None = REPLAY_END_DATE_DEFAULT,
+    max_frames_per_checkpoint: int | None = REPLAY_MAX_FRAMES_DEFAULT,
 ) -> dict[str, Any]:
     runs_root = _results_root(project_root, results_dir)
     if not runs_root.exists():
@@ -1897,7 +2033,8 @@ def build_checkpoint_replay_payload(
                 ),
             }
 
-        default_checkpoint = best_checkpoint
+        current_checkpoint = _resolve_current_replay_checkpoint(checkpoint_payloads)
+        default_checkpoint = current_checkpoint
 
         replay_runs.append(
             {
@@ -1906,11 +2043,13 @@ def build_checkpoint_replay_payload(
                 "tickers": tickers,
                 "data_source": dataset.data_source,
                 "data_source_label": dataset.source_label,
+                "recent_months": int(dataset.recent_months),
                 "display_start": dataset.display_start,
                 "display_end": dataset.display_end,
                 "n_days": dataset.n_days,
                 "checkpoints": checkpoint_payloads,
                 "checkpointMap": {item["checkpoint_id"]: item for item in checkpoint_payloads},
+                "currentCheckpointId": current_checkpoint["checkpoint_id"],
                 "defaultCheckpointId": default_checkpoint["checkpoint_id"],
                 "bestCheckpointId": best_checkpoint["checkpoint_id"],
                 "worstCheckpointId": worst_checkpoint["checkpoint_id"],
@@ -1937,18 +2076,21 @@ def build_checkpoint_replay_payload(
         }
 
     default_run = replay_runs[0]
+    effective_recent_months = max(
+        [int(run.get("recent_months") or 0) for run in replay_runs] or [int(recent_months)]
+    )
     return {
         "schema_version": REPLAY_PAYLOAD_SCHEMA_VERSION,
         "status": "ready",
         "message": "Đã dựng payload replay checkpoint theo ngày.",
         "warnings": warnings,
         "built_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "recent_months": int(recent_months),
+        "recent_months": int(effective_recent_months),
         "warmup_months": int(warmup_months),
         "run_limit": int(run_limit),
         "checkpoint_samples": int(checkpoint_samples),
-        "vnstock_source": str(vnstock_source or "VCI"),
-        "end_date": str(end_date or "2026-02-28"),
+        "vnstock_source": str(vnstock_source or REPLAY_VNSTOCK_SOURCE_DEFAULT),
+        "end_date": str(end_date or REPLAY_END_DATE_DEFAULT),
         "max_frames_per_checkpoint": max_frames_per_checkpoint,
         "defaultRunId": default_run["run_id"],
         "runs": replay_runs,
