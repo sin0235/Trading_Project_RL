@@ -27,13 +27,8 @@ features:
   - volume_norm
   - volatility_20d
 
-# ============================================================
-#  WINDOW SIZE
-#  30 la du cho LSTM bat pattern ngan-trung han.
-#  60 tang input size gap doi (60*16*9=8640) nhung khong
-#  cho them gia tri tuong xung, LSTM kho hoc hon.
-# ============================================================
-window_size: 30
+# Fallback theo run ppo_20260324_044152, nhung giu advanced reward.
+window_size: 60
 
 data_path: data/processed_v2
 
@@ -51,15 +46,13 @@ reward_name: advanced
 reward_window: 20
 reward_sharpe_scale: 1.0
 reward_excess_scale: 80.0
-reward_drawdown_scale: 2.0
-reward_turnover_scale: 0.3
-reward_advanced_alpha: 0.08
-reward_advanced_beta: 0.70
-reward_advanced_gamma: 0.02
-# Nho hon run cu 0.015, nhung chua mo toi muc giao dich vi mo.
-trade_deadband: 0.003
-# Rong hon run cu 0.12, nhung van giu update co kiem soat.
-max_weight_change_per_step: 0.35
+reward_drawdown_scale: 1.5
+reward_turnover_scale: 0.15
+reward_advanced_alpha: 0.10
+reward_advanced_beta: 0.50
+reward_advanced_gamma: 0.01
+trade_deadband: 0.01
+max_weight_change_per_step: 0.15
 
 # ============================================================
 #  MODEL (LSTM)
@@ -70,35 +63,33 @@ dropout: 0.1
 # Legacy key: giu lai de tuong thich nguoc, model hien tai khong con dung.
 log_std_init: -0.5
 
-# Giam vua phai prior so voi 16.0 cua run cu, tranh sample qua soc.
-dirichlet_total_concentration: 10.0
+dirichlet_total_concentration: 16.0
 
-learning_rate: 0.0004
+learning_rate: 0.0003
 n_steps: 2048
 batch_size: 256
-n_epochs: 16
+n_epochs: 10
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.25
-ent_coef: 0.002
-vf_coef: 0.35
+clip_range: 0.20
+ent_coef: 0.01
+vf_coef: 0.50
 max_grad_norm: 0.5
-target_kl: 0.05
+target_kl: 0.02
 
 # ============================================================
 #  TRAINING SCHEDULE
 # ============================================================
-total_timesteps: 900000
+total_timesteps: 600000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.00005
+min_learning_rate: 0.00003
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:
-  - 150000
+  - 100000
   - 300000
-  - 600000
-  - 900000
+  - 500000
 n_eval_episodes: 3
 # Tat early stopping dua tren ket qua val.
 early_stop_patience_evals: 0
