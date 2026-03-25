@@ -692,7 +692,7 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
     train_env = make_env(cfg["tickers"], split.train, cfg, for_eval=False)
     val_env = make_env(cfg["tickers"], split.val, cfg, for_eval=True)
     test_env = make_env(cfg["tickers"], split.test, cfg, for_eval=True)
-    print(f"Config {cfg}  train_env:{train_env.reward_kwargs}")
+    # print(f"Config {cfg}  train_env:{train_env.reward_kwargs}")
 
     state_space = train_env.state_space
     n_stocks = state_space.n_stocks
@@ -951,7 +951,7 @@ def evaluate_branchingddq(
     test_env = make_env(eval_cfg["tickers"], split.test, eval_cfg, for_eval=True)
     val_env = make_env(eval_cfg["tickers"], split.val, eval_cfg, for_eval=True)
     train_env = make_env(eval_cfg["tickers"], split.train, eval_cfg, for_eval=True)
-    test_env = train_env
+    # test_env = train_env
     state_space = test_env.state_space
 
     model = BranchingDRQNNetwork(
