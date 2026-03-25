@@ -6,7 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_NOTE = ROOT / "notebooks" / "project_RL_nhom_09 .zpln"
-RUNTIME_NOTE = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook\project_RL_nhom_09 _2MNYSRNK4.zpln")
+RUNTIME_NOTE_DIR = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook")
+RUNTIME_NOTE_GLOB = "project_RL_nhom_09*.zpln"
 
 
 BUILD_REPLAY_TEXT = r"""%spark.pyspark
@@ -18,18 +19,36 @@ from pathlib import Path
 if "locate_dir" not in globals():
     raise RuntimeError("Hãy chạy paragraph 'Setup Base Payload' trước.")
 
-from scripts.dashboard_paths import DashboardProjectPaths
-
 PROJECT_ROOT = z.input("project_root", DEFAULT_PROJECT_ROOT)
+_bootstrap_project_root = str(PROJECT_ROOT or DEFAULT_PROJECT_ROOT).strip() or DEFAULT_PROJECT_ROOT
+for _candidate in (Path(_bootstrap_project_root).expanduser(), Path(_bootstrap_project_root).expanduser().parent):
+    try:
+        _resolved = str(_candidate.resolve())
+    except Exception:
+        _resolved = str(_candidate)
+    if _resolved and _resolved not in sys.path:
+        sys.path.insert(0, _resolved)
+
+import scripts.dashboard_paths as dashboard_paths_module
+dashboard_paths_module = importlib.reload(dashboard_paths_module)
+DashboardProjectPaths = dashboard_paths_module.DashboardProjectPaths
+REPLAY_CHECKPOINT_SAMPLES_DEFAULT = dashboard_paths_module.REPLAY_CHECKPOINT_SAMPLES_DEFAULT
+REPLAY_END_DATE_DEFAULT = dashboard_paths_module.REPLAY_END_DATE_DEFAULT
+REPLAY_PAYLOAD_SCHEMA_VERSION = dashboard_paths_module.REPLAY_PAYLOAD_SCHEMA_VERSION
+REPLAY_RECENT_MONTHS_DEFAULT = dashboard_paths_module.REPLAY_RECENT_MONTHS_DEFAULT
+REPLAY_RUN_LIMIT_DEFAULT = dashboard_paths_module.REPLAY_RUN_LIMIT_DEFAULT
+REPLAY_VNSTOCK_SOURCE_DEFAULT = dashboard_paths_module.REPLAY_VNSTOCK_SOURCE_DEFAULT
+REPLAY_WARMUP_MONTHS_DEFAULT = dashboard_paths_module.REPLAY_WARMUP_MONTHS_DEFAULT
+
 ENABLE_CHECKPOINT_REPLAY = str(z.input("enable_checkpoint_replay", "true")).strip().lower() in ("true", "1", "yes", "y")
-REPLAY_MONTHS = to_int(z.input("replay_months", "12"), 12)
-REPLAY_WARMUP_MONTHS = to_int(z.input("replay_warmup_months", "4"), 4)
-REPLAY_RUN_LIMIT = to_int(z.input("replay_run_limit", "1"), 1)
-CHECKPOINT_SAMPLES = to_int(z.input("checkpoint_samples", "6"), 6)
-VNSTOCK_SOURCE = z.input("vnstock_source", "VCI").strip() or "VCI"
-REPLAY_END_DATE = str(z.input("replay_end_date", "2026-02-28") or "2026-02-28").strip() or "2026-02-28"
+REPLAY_MONTHS = REPLAY_RECENT_MONTHS_DEFAULT
+REPLAY_WARMUP_MONTHS = REPLAY_WARMUP_MONTHS_DEFAULT
+REPLAY_RUN_LIMIT = REPLAY_RUN_LIMIT_DEFAULT
+CHECKPOINT_SAMPLES = REPLAY_CHECKPOINT_SAMPLES_DEFAULT
+VNSTOCK_SOURCE = REPLAY_VNSTOCK_SOURCE_DEFAULT
+REPLAY_END_DATE = REPLAY_END_DATE_DEFAULT
 REFRESH_REPLAY_CACHE = str(z.input("refresh_replay_cache", "false")).strip().lower() in ("true", "1", "yes", "y")
-REPLAY_CACHE_SCHEMA_VERSION = 2
+REPLAY_CACHE_SCHEMA_VERSION = REPLAY_PAYLOAD_SCHEMA_VERSION
 def replay_needs_rebuild(payload):
     if not isinstance(payload, dict):
         return True
@@ -156,8 +175,26 @@ import json
 import sys
 from pathlib import Path
 
-from scripts.dashboard_paths import DashboardProjectPaths
+DEFAULT_PROJECT_ROOT_FALLBACK = "/workspace/project"
+project_root = str(z.input("project_root", DEFAULT_PROJECT_ROOT_FALLBACK) or DEFAULT_PROJECT_ROOT_FALLBACK).strip() or DEFAULT_PROJECT_ROOT_FALLBACK
+for _candidate in (Path(project_root).expanduser(), Path(project_root).expanduser().parent):
+    try:
+        _resolved = str(_candidate.resolve())
+    except Exception:
+        _resolved = str(_candidate)
+    if _resolved and _resolved not in sys.path:
+        sys.path.insert(0, _resolved)
 
+import scripts.dashboard_paths as dashboard_paths_module
+dashboard_paths_module = importlib.reload(dashboard_paths_module)
+DashboardProjectPaths = dashboard_paths_module.DashboardProjectPaths
+REPLAY_CHECKPOINT_SAMPLES_DEFAULT = dashboard_paths_module.REPLAY_CHECKPOINT_SAMPLES_DEFAULT
+REPLAY_END_DATE_DEFAULT = dashboard_paths_module.REPLAY_END_DATE_DEFAULT
+REPLAY_PAYLOAD_SCHEMA_VERSION = dashboard_paths_module.REPLAY_PAYLOAD_SCHEMA_VERSION
+REPLAY_RECENT_MONTHS_DEFAULT = dashboard_paths_module.REPLAY_RECENT_MONTHS_DEFAULT
+REPLAY_RUN_LIMIT_DEFAULT = dashboard_paths_module.REPLAY_RUN_LIMIT_DEFAULT
+REPLAY_VNSTOCK_SOURCE_DEFAULT = dashboard_paths_module.REPLAY_VNSTOCK_SOURCE_DEFAULT
+REPLAY_WARMUP_MONTHS_DEFAULT = dashboard_paths_module.REPLAY_WARMUP_MONTHS_DEFAULT
 
 def load_json(path):
     if path is None or not path.exists():
@@ -205,16 +242,15 @@ def replay_cache_matches_request(payload):
     )
 
 
-project_root = str(z.input("project_root", "/workspace/project") or "/workspace/project").strip() or "/workspace/project"
 enable_checkpoint_replay = str(z.input("enable_checkpoint_replay", "true")).strip().lower() in ("true", "1", "yes", "y")
-replay_months = to_int(z.input("replay_months", "12"), 12)
-replay_warmup_months = to_int(z.input("replay_warmup_months", "4"), 4)
-replay_run_limit = to_int(z.input("replay_run_limit", "1"), 1)
-checkpoint_samples = to_int(z.input("checkpoint_samples", "6"), 6)
-vnstock_source = str(z.input("vnstock_source", "VCI") or "VCI").strip() or "VCI"
-replay_end_date = str(z.input("replay_end_date", "2026-02-28") or "2026-02-28").strip() or "2026-02-28"
+replay_months = REPLAY_RECENT_MONTHS_DEFAULT
+replay_warmup_months = REPLAY_WARMUP_MONTHS_DEFAULT
+replay_run_limit = REPLAY_RUN_LIMIT_DEFAULT
+checkpoint_samples = REPLAY_CHECKPOINT_SAMPLES_DEFAULT
+vnstock_source = REPLAY_VNSTOCK_SOURCE_DEFAULT
+replay_end_date = REPLAY_END_DATE_DEFAULT
 refresh_replay_cache = str(z.input("refresh_replay_cache", "false")).strip().lower() in ("true", "1", "yes", "y")
-REPLAY_CACHE_SCHEMA_VERSION = 2
+REPLAY_CACHE_SCHEMA_VERSION = REPLAY_PAYLOAD_SCHEMA_VERSION
 
 paths = DashboardProjectPaths.from_project_root(project_root)
 paths.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -323,8 +359,22 @@ def patch_note(path: Path) -> None:
     path.write_text(json.dumps(note, ensure_ascii=False, separators=(",", ":")), encoding="utf-8-sig")
 
 
+def iter_target_notes() -> list[Path]:
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in [LOCAL_NOTE, *sorted(RUNTIME_NOTE_DIR.glob(RUNTIME_NOTE_GLOB))]:
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(candidate)
+    return ordered
+
+
 def main() -> None:
-    for target in (LOCAL_NOTE, RUNTIME_NOTE):
+    for target in iter_target_notes():
         patch_note(target)
         print(f"patched {target}")
 

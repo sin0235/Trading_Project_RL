@@ -181,12 +181,17 @@ def infer_run_config_from_checkpoint(
     ih_key = "feature_extractor.lstm.weight_ih_l0"
     hh_key = "feature_extractor.lstm.weight_hh_l0"
     shared_fc_key = "shared_fc.0.weight"
-    adv_out_key = "advantage_stream.2.bias"
+    legacy_adv_out_key = "advantage_stream.2.bias"
+    branch_adv_out_keys = sorted(
+        key
+        for key in state_dict
+        if key.startswith("advantage_streams.") and key.endswith(".2.bias")
+    )
     if (
         ih_key not in state_dict
         or hh_key not in state_dict
         or shared_fc_key not in state_dict
-        or adv_out_key not in state_dict
+        or (legacy_adv_out_key not in state_dict and not branch_adv_out_keys)
     ):
         raise ValueError(f"Checkpoint không đúng định dạng DDQ-LSTM mong đợi: {ckpt_path}")
 
@@ -194,9 +199,30 @@ def infer_run_config_from_checkpoint(
     num_layers = len([k for k in state_dict if k.startswith("feature_extractor.lstm.weight_hh_l")])
     input_size = int(state_dict[ih_key].shape[1])
     combined_dim = int(state_dict[shared_fc_key].shape[1])
-    n_actions = int(state_dict[adv_out_key].shape[0])
+    inferred_n_stocks = combined_dim - hidden_size - 1
+    if legacy_adv_out_key in state_dict:
+        n_actions = int(state_dict[legacy_adv_out_key].shape[0])
+        n_stocks = inferred_n_stocks
+        if n_actions % n_stocks != 0:
+            raise ValueError(
+                f"Không suy luận được k từ checkpoint {ckpt_path}: "
+                f"n_actions={n_actions}, n_stocks={n_stocks}"
+            )
+        inferred_k = n_actions // n_stocks
+    else:
+        branch_sizes = {int(state_dict[key].shape[0]) for key in branch_adv_out_keys}
+        if len(branch_sizes) != 1:
+            raise ValueError(
+                f"Checkpoint Branching DDQ có số action/branch không đồng nhất: {sorted(branch_sizes)}"
+            )
+        n_stocks = len(branch_adv_out_keys)
+        inferred_k = next(iter(branch_sizes))
+        if inferred_n_stocks > 0 and inferred_n_stocks != n_stocks:
+            raise ValueError(
+                f"Checkpoint Branching DDQ không khớp số mã: combined_dim -> {inferred_n_stocks}, "
+                f"branch_count -> {n_stocks}"
+            )
 
-    n_stocks = combined_dim - hidden_size - 1
     if n_stocks <= 0:
         raise ValueError(
             f"Không suy luận được n_stocks từ checkpoint {ckpt_path}: "
@@ -207,14 +233,7 @@ def infer_run_config_from_checkpoint(
             f"Không suy luận được số features từ checkpoint {ckpt_path}: "
             f"input_size={input_size}, n_stocks={n_stocks}"
         )
-    if n_actions % n_stocks != 0:
-        raise ValueError(
-            f"Không suy luận được k từ checkpoint {ckpt_path}: "
-            f"n_actions={n_actions}, n_stocks={n_stocks}"
-        )
-
     inferred_n_features = input_size // n_stocks
-    inferred_k = n_actions // n_stocks
 
     tickers = list(base_config.get("tickers", []))
     features = list(base_config.get("features", []))
@@ -224,13 +243,17 @@ def infer_run_config_from_checkpoint(
             "Không thể dựng env/model tương thích."
         )
     if len(features) != inferred_n_features:
-        raise ValueError(
-            f"Checkpoint cần {inferred_n_features} features nhưng base_config có {len(features)}. "
-            "Không thể dựng env/model tương thích."
-        )
+        if len(FEATURES) == inferred_n_features:
+            features = list(FEATURES)
+        else:
+            raise ValueError(
+                f"Checkpoint cần {inferred_n_features} features nhưng base_config có {len(features)}. "
+                "Không thể dựng env/model tương thích."
+            )
 
     inferred_cfg = {
         **base_config,
+        "features": features,
         "hidden_size": hidden_size,
         "num_layers": num_layers,
         "k": inferred_k,

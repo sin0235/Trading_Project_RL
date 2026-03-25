@@ -43,13 +43,6 @@ test_ratio: 0.15
 
 initial_balance: 1000000000
 fee_rate: 0.001
-
-# ============================================================
-#  EPISODE LENGTH
-#  Giam tu 756 xuong 378 (~1.5 nam) de moi rollout 2048 steps
-#  chua 5-6 episodes hoan chinh -> GAE estimate on dinh hon.
-#  756 steps chi cho ~2.7 ep/rollout -> advantage qua noisy.
-# ============================================================
 max_steps_train: 378
 max_steps_eval: 9999
 
@@ -66,20 +59,13 @@ max_steps_eval: 9999
 reward_scaling: 1.0
 reward_name: sharpe
 reward_window: 20
+reward_window: 20
 reward_sharpe_scale: 1.0
-reward_excess_scale: 80.0
-reward_drawdown_scale: 1.5
-reward_turnover_scale: 0.15
-
-# ============================================================
-#  EXECUTION FILTERS
-#  trade_deadband 0.01 (giam tu 0.015): cho phep rebalance nho,
-#  agent co the fine-tune allocation.
-#  max_weight_change 0.15 (tang tu 0.10): cho phep thay doi
-#  portfolio nhanh hon khi co co hoi.
-# ============================================================
-trade_deadband: 0.01
-max_weight_change_per_step: 0.15
+reward_excess_scale: 60.0
+reward_drawdown_scale: 2.0
+reward_turnover_scale: 0.3
+trade_deadband: 0.015
+max_weight_change_per_step: 0.12
 
 # ============================================================
 #  MODEL (LSTM)
@@ -102,29 +88,17 @@ log_std_init: -0.5
 # ============================================================
 dirichlet_total_concentration: 16.0
 
-# ============================================================
-#  PPO HYPERPARAMETERS
-# ============================================================
-learning_rate: 0.0003
+learning_rate: 0.00025
 n_steps: 2048
-# batch_size 256 (tang tu 128): 2048/256 = 8 minibatch/epoch
-# thay vi 16 -> giam over-fitting tren 1 rollout.
 batch_size: 256
-# n_epochs 10 (giam tu 15): bot over-fit tren cung 1 buffer.
-# 15 epochs x 16 minibatch = 240 grad steps qua nhieu.
-n_epochs: 10
+n_epochs: 12
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
-# ent_coef 0.01 (tang tu 0.0): QUAN TRONG - khuyen khich
-# exploration. Khong co entropy bonus, ket hop voi
-# concentration cao -> policy khong bao gio escape uniform.
-ent_coef: 0.01
+ent_coef: 0.002
 vf_coef: 0.5
 max_grad_norm: 0.5
-# target_kl 0.02 (giam tu 0.04): chan policy drift lon,
-# giu training on dinh hon.
-target_kl: 0.02
+target_kl: 0.03
 
 # ============================================================
 #  TRAINING SCHEDULE
@@ -132,7 +106,7 @@ target_kl: 0.02
 total_timesteps: 600000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.00003
+min_learning_rate: 0.000025
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:

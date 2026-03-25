@@ -33,7 +33,38 @@ def get_api_key_vnstock() -> str | None:
     return os.getenv("API_KEY_VNSTOCK")
 
 
+def get_env_float(
+    name: str,
+    default: float,
+    *,
+    fallback_names: tuple[str, ...] = (),
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    _load_project_env()
+    for key in (name, *fallback_names):
+        raw = os.getenv(key)
+        if raw in (None, ""):
+            continue
+        try:
+            value = float(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        if min_value is not None:
+            value = max(min_value, value)
+        if max_value is not None:
+            value = min(max_value, value)
+        return value
+    return float(default)
+
+
 API_KEY_VNSTOCK = get_api_key_vnstock()
+CHART_COMPARE_ALPHA = get_env_float(
+    "CHART_COMPARE_ALPHA",
+    0.95,
+    fallback_names=("alpha",),
+    min_value=0.0,
+)
 
 ALL_TICKERS = [
     'ACB', 'BCM', 'BID', 'BVH', 'CTG',
@@ -52,7 +83,7 @@ TICKERS = [
 ]
 
 
-WINDOW_SIZE = 30
+WINDOW_SIZE = 60
 DATA_PATH = "data/processed"
 
 FEATURES = [

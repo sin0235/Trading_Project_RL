@@ -458,6 +458,113 @@ class BranchingDRQNNetwork(nn.Module):
             return actions, new_hidden
 
 # ============================================================
+#  Branching DRQN cho vector action per-stock
+# ============================================================
+
+
+class BranchingDRQNNetwork(nn.Module):
+    """
+    Branching Dueling DRQN.
+
+    Mỗi cổ phiếu là một branch riêng với k action rời rạc (sell/hold/buy).
+    Output Q-value có shape (batch, n_stocks, k), phù hợp với env discrete
+    đang hỗ trợ vector action độ dài n_stocks.
+    """
+
+    def __init__(self, n_stocks: int, n_features: int,
+                 seq_len: int = 30, hidden_size: int = 128,
+                 num_layers: int = 2, dropout: float = 0.1,
+                 k: int = 3):
+        super().__init__()
+
+        self.n_stocks = n_stocks
+        self.n_features = n_features
+        self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        self.k = k
+
+        input_size = n_stocks * n_features
+        portfolio_dim = 1 + n_stocks
+        combined_dim = hidden_size + portfolio_dim
+
+        self.feature_extractor = LSTMFeatureExtractor(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+        self.shared_fc = nn.Sequential(
+            nn.Linear(combined_dim, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1),
+        )
+        self.advantage_streams = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size // 2),
+                    nn.ReLU(),
+                    nn.Linear(hidden_size // 2, self.k),
+                )
+                for _ in range(self.n_stocks)
+            ]
+        )
+
+        _init_sequential(self.shared_fc, output_gain=np.sqrt(2))
+        _init_sequential(self.value_stream, output_gain=1.0)
+        for stream in self.advantage_streams:
+            _init_sequential(stream, output_gain=0.01)
+
+    def forward(self, market_state: torch.Tensor,
+                portfolio_state: torch.Tensor,
+                hidden: tuple = None) -> tuple:
+        if market_state.dim() == 4:
+            batch, seq, stocks, feats = market_state.shape
+            market_state = market_state.reshape(batch, seq, stocks * feats)
+
+        lstm_features, new_hidden = self.feature_extractor(market_state, hidden)
+        combined = torch.cat([lstm_features, portfolio_state], dim=-1)
+        shared_out = self.shared_fc(combined)
+
+        value = self.value_stream(shared_out).unsqueeze(-1)  # (batch, 1, 1)
+        advantages = torch.stack(
+            [stream(shared_out) for stream in self.advantage_streams],
+            dim=1,
+        )  # (batch, n_stocks, k)
+        q_values = value + advantages - advantages.mean(dim=-1, keepdim=True)
+        return q_values, new_hidden
+
+    def init_hidden(self, batch_size: int,
+                    device: torch.device = None) -> tuple:
+        return self.feature_extractor.init_hidden(batch_size, device)
+
+    def train(self, mode: bool = True):
+        return _set_module_training_mode(self, mode)
+
+    def eval(self):
+        return self.train(False)
+
+    def select_action(self, market_state: torch.Tensor,
+                      portfolio_state: torch.Tensor,
+                      hidden: tuple,
+                      epsilon: float = 0.0) -> tuple:
+        if np.random.random() < epsilon:
+            action = np.random.randint(0, self.k, size=(self.n_stocks,), dtype=np.int64)
+            with torch.no_grad():
+                _, new_hidden = self.forward(market_state, portfolio_state, hidden)
+            return action, new_hidden
+
+        with torch.no_grad():
+            q_values, new_hidden = self.forward(market_state, portfolio_state, hidden)
+            action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
+        return action, new_hidden
+
+
+# ============================================================
 #  Mạng PPO Actor-Critic
 # ============================================================
 

@@ -6,7 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_NOTE = ROOT / "notebooks" / "project_RL_nhom_09 .zpln"
-RUNTIME_NOTE = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook\project_RL_nhom_09 _2MNYSRNK4.zpln")
+RUNTIME_NOTE_DIR = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook")
+RUNTIME_NOTE_GLOB = "project_RL_nhom_09*.zpln"
 CACHE_FILES = [
     ROOT / ".zeppelin_cache" / "dashboard_train_payload.json",
     ROOT / ".zeppelin_cache" / "dashboard_payload.json",
@@ -155,8 +156,22 @@ def patch_cache(path: Path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
+def iter_target_notes() -> list[Path]:
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in [LOCAL_NOTE, *sorted(RUNTIME_NOTE_DIR.glob(RUNTIME_NOTE_GLOB))]:
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(candidate)
+    return ordered
+
+
 def main() -> None:
-    for note in (LOCAL_NOTE, RUNTIME_NOTE):
+    for note in iter_target_notes():
         patch_note(note)
         print(f"patched note {note}")
     for cache in CACHE_FILES:

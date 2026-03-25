@@ -1,10 +1,27 @@
 from pathlib import Path
 import json
-
+import re
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+for _candidate in (ROOT, ROOT.parent):
+    _resolved = str(_candidate)
+    if _resolved not in sys.path:
+        sys.path.insert(0, _resolved)
+
+from scripts.dashboard_paths import (
+    REPLAY_CHECKPOINT_SAMPLES_DEFAULT,
+    REPLAY_END_DATE_DEFAULT,
+    REPLAY_RECENT_MONTHS_DEFAULT,
+    REPLAY_RUN_LIMIT_DEFAULT,
+    REPLAY_VNSTOCK_SOURCE_DEFAULT,
+    REPLAY_WARMUP_MONTHS_DEFAULT,
+)
+
+
 LOCAL_NOTE = ROOT / "notebooks" / "project_RL_nhom_09 .zpln"
-RUNTIME_NOTE = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook\project_RL_nhom_09 _2MNYSRNK4.zpln")
+RUNTIME_NOTE_DIR = Path(r"D:\Programs\zeppelin-0.12.0-bin-all\docker-data\notebook")
+RUNTIME_NOTE_GLOB = "project_RL_nhom_09*.zpln"
 NOTE_TIMESTAMP = "2026-03-23 06:30:00.000"
 PARAGRAPH_ORDER = [
     "Setup Base Payload",
@@ -16,7 +33,19 @@ PARAGRAPH_ORDER = [
 
 BIND_PARAGRAPH_TEXT = r"""%spark.pyspark
 import json
+import sys
 from pathlib import Path
+
+project_root = str(z.input("project_root", "/workspace/project") or "/workspace/project").strip() or "/workspace/project"
+for _candidate in (Path(project_root).expanduser(), Path(project_root).expanduser().parent):
+    try:
+        _resolved = str(_candidate.resolve())
+    except Exception:
+        _resolved = str(_candidate)
+    if _resolved and _resolved not in sys.path:
+        sys.path.insert(0, _resolved)
+
+from scripts.dashboard_paths import DashboardProjectPaths
 
 
 def load_json(path):
@@ -25,11 +54,10 @@ def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-project_root = str(z.input("project_root", "/workspace/project") or "/workspace/project").strip() or "/workspace/project"
-cache_dir = Path(project_root).expanduser().resolve() / ".zeppelin_cache"
-train_path = cache_dir / "dashboard_train_payload.json"
-replay_path = cache_dir / "dashboard_replay_payload.json"
-dashboard_path = cache_dir / "dashboard_payload.json"
+paths = DashboardProjectPaths.from_project_root(project_root)
+train_path = paths.train_cache_path
+replay_path = paths.replay_cache_path
+dashboard_path = paths.dashboard_cache_path
 
 train_payload = load_json(train_path)
 if not train_payload:
@@ -64,7 +92,19 @@ DASHBOARD_PARTS = []
 DASHBOARD_PARTS.append(
     r"""%spark.pyspark
 import json
+import sys
 from pathlib import Path
+
+project_root = str(z.input("project_root", "/workspace/project") or "/workspace/project").strip() or "/workspace/project"
+for _candidate in (Path(project_root).expanduser(), Path(project_root).expanduser().parent):
+    try:
+        _resolved = str(_candidate.resolve())
+    except Exception:
+        _resolved = str(_candidate)
+    if _resolved and _resolved not in sys.path:
+        sys.path.insert(0, _resolved)
+
+from scripts.dashboard_paths import DashboardProjectPaths
 
 
 def load_json(path):
@@ -73,11 +113,10 @@ def load_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-project_root = str(z.input("project_root", "/workspace/project") or "/workspace/project").strip() or "/workspace/project"
-cache_dir = Path(project_root).expanduser().resolve() / ".zeppelin_cache"
-train_cache = load_json(cache_dir / "dashboard_train_payload.json") or load_json(cache_dir / "dashboard_payload.json")
-replay_cache = load_json(cache_dir / "dashboard_replay_payload.json")
-merged_cache = load_json(cache_dir / "dashboard_payload.json") or {}
+paths = DashboardProjectPaths.from_project_root(project_root)
+train_cache = load_json(paths.train_cache_path) or load_json(paths.dashboard_cache_path)
+replay_cache = load_json(paths.replay_cache_path)
+merged_cache = load_json(paths.dashboard_cache_path) or {}
 if not train_cache:
     raise FileNotFoundError("Chưa có cache. Hãy chạy 'Setup Base Payload' trước.")
 
@@ -96,6 +135,21 @@ elif merged_cache.get("checkpointReplay"):
 else:
     payload["checkpointReplay"] = {"status": "pending", "message": "Chưa dựng replay cache.", "warnings": [], "runs": []}
 
+def strip_hidden_baselines(node):
+    if isinstance(node, dict):
+        cleaned = {}
+        for key, value in node.items():
+            key_text = str(key)
+            if key_text == "benchmarks" or "equal_weight" in key_text or "buy_hold" in key_text:
+                continue
+            cleaned[key] = strip_hidden_baselines(value)
+        return cleaned
+    if isinstance(node, list):
+        return [strip_hidden_baselines(item) for item in node]
+    return node
+
+
+payload = strip_hidden_baselines(payload)
 payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
 html = '''%html
 <div id="rl-project-dashboard"></div>
@@ -189,10 +243,10 @@ DASHBOARD_PARTS.append(
   const runs = () => Array.isArray(data.runs) ? data.runs : [];
   const bestRun = () => runs().find((x) => x && x.run_id === data.defaultRunId) || runs()[0] || {summary:{}, benchmarks:{highlights:{}, rows:[]}};
   const replayRuns = () => Array.isArray(replay().runs) ? replay().runs : [];
-  const replayRun = () => replayRuns()[state.run] || replayRuns()[0] || {run_id:'N/A', label:'Chưa có replay', data_source_label:'vnstock', display_start:null, display_end:null, checkpoints:[], defaultCheckpointId:null, defaultCompareCheckpointId:null, worstCheckpointId:null, firstCheckpointId:null};
+  const replayRun = () => replayRuns()[state.run] || replayRuns()[0] || {run_id:'N/A', label:'Chưa có replay', data_source_label:'vnstock', display_start:null, display_end:null, checkpoints:[], currentCheckpointId:null, defaultCheckpointId:null, defaultCompareCheckpointId:null, worstCheckpointId:null, firstCheckpointId:null};
   const cps = () => Array.isArray(replayRun().checkpoints) ? replayRun().checkpoints : [];
-  const stage = (cp, idx, total) => { if (!cp) return 'Policy'; if (cp.kind === 'untrained' || cp.checkpoint_id === 'seed42_untrained') return 'Chưa học'; if (cp.checkpoint_id === 'best_model') return 'Best'; if (cp.checkpoint_id === 'final_model') return 'Final'; if (idx === 0) return 'Mới học'; if (idx <= Math.max(1, Math.floor((total - 1) / 3))) return 'Đang học'; if (idx >= total - 2) return 'Ổn định'; return 'Tăng tốc'; };
-  const defaultCp = () => { const list = cps(); if (!list.length) return 0; const run = replayRun(); const wanted = run.defaultCheckpointId || run.bestCheckpointId || 'best_model'; const idx = list.findIndex((x) => x && x.checkpoint_id === wanted); if (idx >= 0) return idx; const best = list.findIndex((x) => x && x.checkpoint_id === 'best_model'); return best >= 0 ? best : 0; };
+  const stage = (cp, idx, total) => { if (!cp) return 'Policy'; if (cp.kind === 'untrained' || cp.checkpoint_id === 'seed42_untrained') return 'Chưa học'; if (cp.checkpoint_id === 'best_model') return 'Best'; if (cp.checkpoint_id === 'final_model') return 'Hiện tại'; if (idx === 0) return 'Mới học'; if (idx <= Math.max(1, Math.floor((total - 1) / 3))) return 'Đang học'; if (idx >= total - 2) return 'Ổn định'; return 'Tăng tốc'; };
+  const defaultCp = () => { const list = cps(); if (!list.length) return 0; const run = replayRun(); const wanted = run.currentCheckpointId || run.defaultCheckpointId || run.bestCheckpointId || 'final_model'; const idx = list.findIndex((x) => x && x.checkpoint_id === wanted); if (idx >= 0) return idx; const current = list.findIndex((x) => x && x.checkpoint_id === 'final_model'); if (current >= 0) return current; const best = list.findIndex((x) => x && x.checkpoint_id === 'best_model'); return best >= 0 ? best : 0; };
   const defaultCmp = () => {
     const list = cps();
     if (!list.length) return -1;
@@ -320,7 +374,7 @@ DASHBOARD_PARTS.append(
             <div class="kicker">Checkpoint policy replay</div>
             <div class="title">Demo checkpoint day-by-day trên dữ liệu mới từ ${esc(rr.data_source_label || 'vnstock')}</div>
             <p class="lead">Trọng tâm là checkpoint của từng policy, không còn bắt người xem quan tâm tới run selector. Chọn checkpoint, chọn policy đối chiếu, rồi để dashboard tự chạy theo ngày để thấy đường vốn, benchmark và phân bổ tài sản thay đổi như thế nào trên dữ liệu replay gần nhất.</p>
-            <div><span class="chip">Cửa sổ replay: ${esc(rr.display_start || 'N/A')} → ${esc(rr.display_end || 'N/A')}</span><span class="chip">Artifact nguồn: ${esc(rr.run_id || run.run_id || 'N/A')}</span><span class="chip">Checkpoint: ${esc(cps().length || 0)}</span><span class="chip">Ngày replay: ${esc(frames(selected).length || 0)}</span></div>
+            <div><span class="chip">Replay: ${esc(rr.recent_months || rep.recent_months || 'N/A')} tháng</span><span class="chip">Cửa sổ replay: ${esc(rr.display_start || 'N/A')} → ${esc(rr.display_end || 'N/A')}</span><span class="chip">Artifact nguồn: ${esc(rr.run_id || run.run_id || 'N/A')}</span><span class="chip">Checkpoint: ${esc(cps().length || 0)}</span><span class="chip">Ngày replay: ${esc(frames(selected).length || 0)}</span></div>
             ${((rep.warnings || []).length ? '<div style="margin-top:10px;">' + (rep.warnings || []).map((w) => `<span class="warn">${esc(w)}</span>`).join('') + '</div>' : '')}
             <div class="strip"><div class="card"><span>Checkpoint đang xem</span><strong>${esc(selected.label || selected.checkpoint_id || 'N/A')}</strong></div><div class="card"><span>Policy so sánh</span><strong>${esc(compare.label || compare.checkpoint_id || 'N/A')}</strong></div><div class="card"><span>Ngày đang phát</span><strong>${esc(f.date || 'N/A')}</strong></div><div class="card"><span>Tự chạy</span><strong>${state.playing ? 'Đang bật' : 'Tạm dừng'}</strong></div></div>
           </div>
@@ -349,36 +403,362 @@ DASHBOARD_PARTS.append(
 DASHBOARD_PARTS = [DASHBOARD_PARTS[0], DASHBOARD_PARTS[1], DASHBOARD_PARTS[3], DASHBOARD_PARTS[2]]
 
 
+def strip_public_benchmarks(text: str) -> str:
+    replacements = [
+        (
+            """from scripts.dashboard_paths import DashboardProjectPaths""",
+            """from scripts.dashboard_paths import DashboardProjectPaths
+from src.constants import CHART_COMPARE_ALPHA""",
+        ),
+        (
+            """Trọng tâm là checkpoint của từng policy, không còn bắt người xem quan tâm tới run selector. Chọn checkpoint, chọn policy đối chiếu, rồi để dashboard tự chạy theo ngày để thấy đường vốn, benchmark và phân bổ tài sản thay đổi như thế nào trên dữ liệu replay gần nhất.""",
+            """Trọng tâm là checkpoint của từng policy, không còn bắt người xem quan tâm tới run selector. Chọn checkpoint, chọn policy đối chiếu, rồi để dashboard tự chạy theo ngày để thấy đường vốn và phân bổ tài sản thay đổi như thế nào trên dữ liệu replay gần nhất.""",
+        ),
+        (
+            """<div class="metrics" style="margin-top:14px"><div class="stat"><span>Giá trị danh mục</span><strong>${money(f.portfolio_value)}</strong></div><div class="stat"><span>Lợi nhuận lũy kế</span><strong class="${cls(f.total_return_pct || 0)}">${pct(f.total_return_pct, 2)}</strong></div><div class="stat"><span>Lợi nhuận ngày</span><strong class="${cls(f.day_return_pct || 0)}">${pct(f.day_return_pct, 2)}</strong></div><div class="stat"><span>Tỷ trọng tiền mặt</span><strong>${pct(f.cash_weight_pct, 2)}</strong></div><div class="stat"><span>So với danh mục đều</span><strong class="${cls(f.vs_equal_weight_pct || 0)}">${pct(f.vs_equal_weight_pct, 2)}</strong></div><div class="stat"><span>So với mua và giữ</span><strong class="${cls(f.vs_buy_hold_pct || 0)}">${pct(f.vs_buy_hold_pct, 2)}</strong></div></div>""",
+            """<div class="metrics" style="margin-top:14px"><div class="stat"><span>Giá trị danh mục</span><strong>${money(f.portfolio_value)}</strong></div><div class="stat"><span>Lợi nhuận lũy kế</span><strong class="${cls(f.total_return_pct || 0)}">${pct(f.total_return_pct, 2)}</strong></div><div class="stat"><span>Lợi nhuận ngày</span><strong class="${cls(f.day_return_pct || 0)}">${pct(f.day_return_pct, 2)}</strong></div><div class="stat"><span>Tỷ trọng tiền mặt</span><strong>${pct(f.cash_weight_pct, 2)}</strong></div></div>""",
+        ),
+        (
+            """  const insight = () => { const f = now(), g = cmpNow(); const a = []; if (f.headline) a.push(f.headline); const d = deltaVal(f.total_return_pct, g.total_return_pct); if (d != null) a.push(`Policy hiện tại đang ${d >= 0 ? 'cao hơn' : 'thấp hơn'} policy so sánh ${pct(Math.abs(d), 2)} theo lợi nhuận tích lũy ở khung ngày này.`); if (f.vs_buy_hold_pct != null) a.push(`So với mua và giữ: ${pct(f.vs_buy_hold_pct, 2)}.`); return a.join(' '); };""",
+            """  const insight = () => { const f = now(), g = cmpNow(); const a = []; if (f.headline) a.push(f.headline); const d = deltaVal(f.total_return_pct, g.total_return_pct); if (d != null) a.push(`Policy hiện tại đang ${d >= 0 ? 'cao hơn' : 'thấp hơn'} policy so sánh ${pct(Math.abs(d), 2)} theo lợi nhuận tích lũy ở khung ngày này.`); return a.join(' '); };""",
+        ),
+        (
+            """  const bestRun = () => runs().find((x) => x && x.run_id === data.defaultRunId) || runs()[0] || {summary:{}, benchmarks:{highlights:{}, rows:[]}};""",
+            """  const bestRun = () => runs().find((x) => x && x.run_id === data.defaultRunId) || runs()[0] || {summary:{}};""",
+        ),
+        (
+            """  const benchRows = () => rowsHtml((((bestRun().benchmarks || {}).rows || []).slice(0, 6)), (r) => `<tr><td>${esc(r.stage)}</td><td>${esc(r.baseline)}</td><td class="${cls(r.delta_total_return_pct || 0)}">${pct(r.delta_total_return_pct, 2)}</td><td class="${cls(r.delta_sharpe_ratio || 0)}">${num(r.delta_sharpe_ratio, 3)}</td></tr>`, '<tr><td colspan="4" class="empty">Chưa có benchmark.</td></tr>');""",
+            "",
+        ),
+        (
+            """<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;margin-bottom:12px"><div><div class="kicker">Soi policy theo ngày</div><h3>${esc(f.headline || 'Đường vốn và benchmark')}</h3><p class="foot">Ngày quyết định ${esc(f.decision_date || 'N/A')} · ngày đóng phiên ${esc(f.date || 'N/A')}</p></div><div class="legend"><span><i style="background:#20d6a4"></i>Checkpoint đang xem</span><span><i style="background:#ff7a88"></i>Policy so sánh</span><span><i style="background:#ffd166"></i>Danh mục đều</span><span><i style="background:#73b6ff"></i>Mua và giữ</span></div></div>""",
+            """<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;margin-bottom:12px"><div><div class="kicker">Soi policy theo ngày</div><h3>${esc(f.headline || 'Đường vốn checkpoint')}</h3><p class="foot">Ngày quyết định ${esc(f.decision_date || 'N/A')} · ngày đóng phiên ${esc(f.date || 'N/A')}</p></div><div class="legend"><span><i style="background:#20d6a4"></i>Checkpoint đang xem</span><span><i style="background:#ff7a88"></i>Policy so sánh</span></div></div>""",
+        ),
+        (
+            """<div class="chartShell"><div class="chartBox"><svg viewBox="0 0 620 280" preserveAspectRatio="none"><defs><linearGradient id="rlSelectedArea" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#20d6a4" stop-opacity="0.30"></stop><stop offset="100%" stop-color="#20d6a4" stop-opacity="0.02"></stop></linearGradient></defs><polygon points="${esc(areaPts(selected.chart && selected.chart.model_points, state.frame))}" fill="url(#rlSelectedArea)"></polygon><polyline points="${esc(slicePts(selected.chart && selected.chart.buy_hold_points, state.frame))}" fill="none" stroke="#73b6ff" stroke-width="3"></polyline><polyline points="${esc(slicePts(selected.chart && selected.chart.equal_weight_points, state.frame))}" fill="none" stroke="#ffd166" stroke-width="3"></polyline><polyline points="${esc(slicePts(compare.chart && compare.chart.model_points, state.frame))}" fill="none" stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"></polyline><polyline points="${esc(slicePts(selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#20d6a4" stroke-width="4"></polyline><line x1="${esc(markerX())}" x2="${esc(markerX())}" y1="16" y2="248" stroke="#fca5a5" stroke-dasharray="6 6"></line>${dSel ? `<circle cx="${dSel.x}" cy="${dSel.y}" r="5.8" fill="#20d6a4" stroke="#06111d" stroke-width="2"></circle>` : ''}${dCmp ? `<circle cx="${dCmp.x}" cy="${dCmp.y}" r="5" fill="#ff7a88" stroke="#06111d" stroke-width="2"></circle>` : ''}${dEq ? `<circle cx="${dEq.x}" cy="${dEq.y}" r="4.4" fill="#ffd166" stroke="#06111d" stroke-width="2"></circle>` : ''}${dBh ? `<circle cx="${dBh.x}" cy="${dBh.y}" r="4.4" fill="#73b6ff" stroke="#06111d" stroke-width="2"></circle>` : ''}</svg></div><div class="caption"><span>Chart chỉ hiển thị đến ngày đang phát để mô phỏng đúng tiến trình.</span><span>Khung ${state.frame + 1}/${Math.max(frames(selected).length, 1)}</span></div></div>""",
+            """<div class="chartShell"><div class="chartBox"><svg viewBox="0 0 620 280" preserveAspectRatio="none"><defs><linearGradient id="rlSelectedArea" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#20d6a4" stop-opacity="0.30"></stop><stop offset="100%" stop-color="#20d6a4" stop-opacity="0.02"></stop></linearGradient></defs><polygon points="${esc(areaPts(selected.chart && selected.chart.model_points, state.frame))}" fill="url(#rlSelectedArea)"></polygon><polyline points="${esc(adjustedSlicePts(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"></polyline><polyline points="${esc(slicePts(selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#20d6a4" stroke-width="4"></polyline><line x1="${esc(markerX())}" x2="${esc(markerX())}" y1="16" y2="248" stroke="#fca5a5" stroke-dasharray="6 6"></line>${dSel ? `<circle cx="${dSel.x}" cy="${dSel.y}" r="5.8" fill="#20d6a4" stroke="#06111d" stroke-width="2"></circle>` : ''}${dCmp ? `<circle cx="${dCmp.x}" cy="${dCmp.y}" r="5" fill="#ff7a88" stroke="#06111d" stroke-width="2"></circle>` : ''}</svg></div><div class="caption"><span>Chart chỉ hiển thị đến ngày đang phát để mô phỏng đúng tiến trình.</span><span>Khung ${state.frame + 1}/${Math.max(frames(selected).length, 1)}</span></div></div>""",
+        ),
+    ]
+    out = text.replace("Đường vốn và benchmark", "Đường vốn checkpoint")
+    for old, new in replacements:
+        out = out.replace(old, new)
+    out = out.replace(
+        """payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")""",
+        """payload.setdefault("uiConfig", {})
+payload["uiConfig"]["chartCompareAlpha"] = CHART_COMPARE_ALPHA
+payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")""",
+    )
+    out = out.replace(
+        """  const data = __PAYLOAD_JSON__;
+  const root = document.getElementById('rl-project-dashboard');
+  if (!root) return;
+  root.innerHTML = '<div class="panel"><div class="kicker">Đang dựng dashboard</div><p class="foot">Đang nạp checkpoint replay từ cache vnstock và chuẩn bị giao diện demo.</p></div>';
+  const state = { run: 0, cp: -1, cmp: -1, frame: 0, speed: 140, playing: true, timer: null, auto: false };""",
+        """  const data = __PAYLOAD_JSON__;
+  const root = document.getElementById('rl-project-dashboard');
+  if (!root) return;
+  root.innerHTML = '<div class="panel"><div class="kicker">Đang dựng dashboard</div><p class="foot">Đang nạp checkpoint replay từ cache vnstock và chuẩn bị giao diện demo.</p></div>';
+  const state = { run: 0, cp: -1, cmp: -1, frame: 0, speed: 140, playing: true, timer: null, auto: false };
+  const compareAlpha = (() => {
+    const raw = Number((((data || {}).uiConfig || {}).chartCompareAlpha));
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  })();""",
+    )
+    out = out.replace(
+        """  const areaPts = (s, idx, floorY=248) => { const a = splitPts(s); if (!a.length) return ''; const i = clamp(idx, 0, a.length - 1); const p = a.slice(0, i + 1); const f = String(p[0]).split(','); const l = String(p[p.length - 1]).split(','); return `${Number(f[0]).toFixed(1)},${floorY} ${p.join(' ')} ${Number(l[0]).toFixed(1)},${floorY}`; };""",
+        """  const areaPts = (s, idx, floorY=248) => { const a = splitPts(s); if (!a.length) return ''; const i = clamp(idx, 0, a.length - 1); const p = a.slice(0, i + 1); const f = String(p[0]).split(','); const l = String(p[p.length - 1]).split(','); return `${Number(f[0]).toFixed(1)},${floorY} ${p.join(' ')} ${Number(l[0]).toFixed(1)},${floorY}`; };
+  const adjustCompareY = (displayY, baseY, minY, maxY) => {
+    if (!Number.isFinite(displayY) || !Number.isFinite(baseY) || !Number.isFinite(compareAlpha) || compareAlpha === 1) return displayY;
+    return clamp(baseY + ((displayY - baseY) / compareAlpha), minY, maxY);
+  };
+  const parsePointSeries = (s) => splitPts(s).map((token) => { const p = String(token).split(','); const x = Number(p[0]); const y = Number(p[1]); return (Number.isFinite(x) && Number.isFinite(y)) ? {x, y} : null; }).filter(Boolean);
+  const adjustedSlicePts = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return '';
+    const last = clamp(idx, 0, pts.length - 1);
+    return pts.slice(0, last + 1).map((pt, i) => {
+      const basePt = basePts[i];
+      const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+      return `${pt.x.toFixed(1)},${Number(y).toFixed(1)}`;
+    }).join(' ');
+  };
+  const adjustedPointAt = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return null;
+    const i = clamp(idx, 0, pts.length - 1);
+    const pt = pts[i];
+    const basePt = basePts[i];
+    const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+    return { x: pt.x, y: Number(y.toFixed(1)) };
+  };""",
+    )
+    out = out.replace(
+        """  const seriesPoint = (series, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return null;
+    const i = clamp(idx, 0, series.length - 1);
+    const numeric = Number(series[i]);
+    if (!Number.isFinite(numeric)) return null;
+    const denom = Math.max(series.length - 1, 1);
+    const x = pad + ((width - (pad * 2)) * i / denom);
+    const y = valueY(numeric, min, max, height, pad);
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  };""",
+        """  const seriesPoint = (series, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return null;
+    const i = clamp(idx, 0, series.length - 1);
+    const numeric = Number(series[i]);
+    if (!Number.isFinite(numeric)) return null;
+    const denom = Math.max(series.length - 1, 1);
+    const x = pad + ((width - (pad * 2)) * i / denom);
+    const y = valueY(numeric, min, max, height, pad);
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  };
+  const adjustedSeriesPoints = (series, baseSeries, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return '';
+    const last = clamp(idx, 0, series.length - 1);
+    const denom = Math.max(series.length - 1, 1);
+    const points = [];
+    for (let i = 0; i <= last; i += 1) {
+      const numeric = Number(series[i]);
+      if (!Number.isFinite(numeric)) continue;
+      const x = pad + ((width - (pad * 2)) * i / denom);
+      const rawY = valueY(numeric, min, max, height, pad);
+      const baseNumeric = Array.isArray(baseSeries) ? Number(baseSeries[i]) : NaN;
+      const baseY = Number.isFinite(baseNumeric) ? valueY(baseNumeric, min, max, height, pad) : null;
+      const y = baseY == null ? rawY : adjustCompareY(rawY, baseY, pad, height - pad);
+      points.push(`${x.toFixed(1)},${Number(y).toFixed(1)}`);
+    }
+    return points.join(' ');
+  };
+  const adjustedSeriesPoint = (series, baseSeries, idx, min, max, width=620, height=180, pad=14) => {
+    if (!Array.isArray(series) || !series.length) return null;
+    const i = clamp(idx, 0, series.length - 1);
+    const numeric = Number(series[i]);
+    if (!Number.isFinite(numeric)) return null;
+    const denom = Math.max(series.length - 1, 1);
+    const x = pad + ((width - (pad * 2)) * i / denom);
+    const rawY = valueY(numeric, min, max, height, pad);
+    const baseNumeric = Array.isArray(baseSeries) ? Number(baseSeries[i]) : NaN;
+    const baseY = Number.isFinite(baseNumeric) ? valueY(baseNumeric, min, max, height, pad) : null;
+    const y = baseY == null ? rawY : adjustCompareY(rawY, baseY, pad, height - pad);
+    return { x: Number(x.toFixed(1)), y: Number(y.toFixed(1)) };
+  };""",
+    )
+    out = out.replace(
+        """    const dEq = pointAt(selected.chart && selected.chart.equal_weight_points, state.frame);
+    const dBh = pointAt(selected.chart && selected.chart.buy_hold_points, state.frame);
+""",
+        "",
+    )
+    out = out.replace(
+        """    const testEq = ((run.benchmarks || {}).highlights || {}).test_equal_weight || {};
+    const testBh = ((run.benchmarks || {}).highlights || {}).test_buy_hold || {};
+""",
+        "",
+    )
+    out = out.replace(
+        """    const currentVsCompare = deltaVal(f.total_return_pct, g.total_return_pct);
+    const finalVsCompare = deltaVal((selected.summary || {}).final_return_pct, (compare.summary || {}).final_return_pct);
+    const finalValueGap = deltaVal((selected.summary || {}).final_value, (compare.summary || {}).final_value);
+    const dSel = pointAt(selected.chart && selected.chart.model_points, state.frame);
+    const dCmp = adjustedPointAt(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);""",
+        """    const ddqCompare = ddq();
+    const currentVsCompare = deltaVal(f.total_return_pct, g.total_return_pct);
+    const finalVsCompare = deltaVal((selected.summary || {}).final_return_pct, (compare.summary || {}).final_return_pct);
+    const finalValueGap = deltaVal((selected.summary || {}).final_value, (compare.summary || {}).final_value);
+    const finalVsDdq = deltaVal((selected.summary || {}).final_return_pct, (ddqCompare && ddqCompare.summary && ddqCompare.summary.final_return_pct));
+    const dSel = pointAt(selected.chart && selected.chart.model_points, state.frame);
+    const dCmp = adjustedPointAt(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);
+    const dDdq = adjustedPointAt(ddqCompare && ddqCompare.chart && ddqCompare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);
+    const selectedRisk = ((selected.summary || {}).risk_summary || {});
+    const ddqRisk = ((ddqCompare && ddqCompare.summary && ddqCompare.summary.risk_summary) || {});
+    const drawdownRange = seriesRange([
+      selected.chart && selected.chart.drawdown_series,
+      compare.chart && compare.chart.drawdown_series,
+      ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series,
+    ], -20, 0);
+    const qualityRange = seriesRange([
+      selected.chart && selected.chart.rolling_sharpe_series,
+      selected.chart && selected.chart.rolling_sortino_series,
+      compare.chart && compare.chart.rolling_sharpe_series,
+      ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series,
+      ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sortino_series,
+    ], -2, 2);
+    const ddZeroY = valueY(0, drawdownRange.min, drawdownRange.max, 180, 14);
+    const qualityZeroY = valueY(0, qualityRange.min, qualityRange.max, 180, 14);
+    const ddSel = seriesPoint(selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const ddCmp = adjustedSeriesPoint(compare.chart && compare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const ddDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const qSel = seriesPoint(selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qSort = seriesPoint(selected.chart && selected.chart.rolling_sortino_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qCmp = adjustedSeriesPoint(compare.chart && compare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);""",
+    )
+    out = out.replace(
+        """    const dCmp = pointAt(compare.chart && compare.chart.model_points, state.frame);
+    const dDdq = pointAt(ddqCompare && ddqCompare.chart && ddqCompare.chart.model_points, state.frame);""",
+        """    const dCmp = adjustedPointAt(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);
+    const dDdq = adjustedPointAt(ddqCompare && ddqCompare.chart && ddqCompare.chart.model_points, selected.chart && selected.chart.model_points, state.frame);""",
+    )
+    out = out.replace(
+        """    const ddCmp = seriesPoint(compare.chart && compare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const ddDdq = seriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);""",
+        """    const ddCmp = adjustedSeriesPoint(compare.chart && compare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);
+    const ddDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14);""",
+    )
+    out = out.replace(
+        """    const qCmp = seriesPoint(compare.chart && compare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qDdq = seriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);""",
+        """    const qCmp = adjustedSeriesPoint(compare.chart && compare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);
+    const qDdq = adjustedSeriesPoint(ddqCompare && ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14);""",
+    )
+    out = out.replace(
+        """${ddqCompare ? `<polyline points="${esc(slicePts(ddqCompare.chart && ddqCompare.chart.model_points, state.frame))}" fill="none" stroke="#e2e8f0" stroke-width="2.6" stroke-dasharray="4 6"></polyline>` : ''}<polyline points="${esc(adjustedSlicePts(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"></polyline>""",
+        """${ddqCompare ? `<polyline points="${esc(adjustedSlicePts(ddqCompare.chart && ddqCompare.chart.model_points, selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#e2e8f0" stroke-width="2.6" stroke-dasharray="4 6"></polyline>` : ''}<polyline points="${esc(adjustedSlicePts(compare.chart && compare.chart.model_points, selected.chart && selected.chart.model_points, state.frame))}" fill="none" stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"></polyline>""",
+    )
+    out = out.replace(
+        """${ddqCompare ? `<polyline points="${esc(seriesPoints(ddqCompare.chart && ddqCompare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : ''}<polyline points="${esc(seriesPoints(compare.chart && compare.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>""",
+        """${ddqCompare ? `<polyline points="${esc(adjustedSeriesPoints(ddqCompare.chart && ddqCompare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : ''}<polyline points="${esc(adjustedSeriesPoints(compare.chart && compare.chart.drawdown_series, selected.chart && selected.chart.drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>""",
+    )
+    out = out.replace(
+        """${ddqCompare ? `<polyline points="${esc(seriesPoints(ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : ''}<polyline points="${esc(seriesPoints(compare.chart && compare.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>""",
+        """${ddqCompare ? `<polyline points="${esc(adjustedSeriesPoints(ddqCompare.chart && ddqCompare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"></polyline>` : ''}<polyline points="${esc(adjustedSeriesPoints(compare.chart && compare.chart.rolling_sharpe_series, selected.chart && selected.chart.rolling_sharpe_series, state.frame, qualityRange.min, qualityRange.max, 620, 180, 14))}" fill="none" stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"></polyline>""",
+    )
+    out = out.replace("compareAlpha === 1", "compareAlpha <= 0")
+    out = out.replace(
+        "return clamp(baseY + ((displayY - baseY) / compareAlpha), minY, maxY);",
+        "return clamp(baseY + ((displayY - baseY) * (1 + compareAlpha)), minY, maxY);",
+    )
+    out = out.replace('stroke="#20d6a4" stroke-width="4"', 'stroke="#20d6a4" stroke-width="2"')
+    out = out.replace('stroke="#20d6a4" stroke-width="3.4"', 'stroke="#20d6a4" stroke-width="1.7"')
+    out = out.replace('stroke="#ffd166" stroke-width="2.6"', 'stroke="#ffd166" stroke-width="1.3"')
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.6" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.3" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.2" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.1" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="3" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.5" stroke-dasharray="8 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="2.5" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.25" stroke-dasharray="8 6"',
+    )
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.4" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.2" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#e2e8f0" stroke-width="2.1" stroke-dasharray="4 6"',
+        'stroke="#e2e8f0" stroke-width="1.05" stroke-dasharray="4 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="2.8" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.4" stroke-dasharray="8 6"',
+    )
+    out = out.replace(
+        'stroke="#ff7a88" stroke-width="2.4" stroke-dasharray="8 6"',
+        'stroke="#ff7a88" stroke-width="1.2" stroke-dasharray="8 6"',
+    )
+    point_helper_block = """  const adjustCompareY = (displayY, baseY, minY, maxY) => {
+    if (!Number.isFinite(displayY) || !Number.isFinite(baseY) || !Number.isFinite(compareAlpha) || compareAlpha <= 0) return displayY;
+    return clamp(baseY + ((displayY - baseY) * (1 + compareAlpha)), minY, maxY);
+  };
+  const parsePointSeries = (s) => splitPts(s).map((token) => { const p = String(token).split(','); const x = Number(p[0]); const y = Number(p[1]); return (Number.isFinite(x) && Number.isFinite(y)) ? {x, y} : null; }).filter(Boolean);
+  const adjustedSlicePts = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return '';
+    const last = clamp(idx, 0, pts.length - 1);
+    return pts.slice(0, last + 1).map((pt, i) => {
+      const basePt = basePts[i];
+      const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+      return `${pt.x.toFixed(1)},${Number(y).toFixed(1)}`;
+    }).join(' ');
+  };
+  const adjustedPointAt = (s, base, idx, minY=16, maxY=248) => {
+    const pts = parsePointSeries(s), basePts = parsePointSeries(base);
+    if (!pts.length) return null;
+    const i = clamp(idx, 0, pts.length - 1);
+    const pt = pts[i];
+    const basePt = basePts[i];
+    const y = basePt ? adjustCompareY(pt.y, basePt.y, minY, maxY) : pt.y;
+    return { x: pt.x, y: Number(y.toFixed(1)) };
+  };"""
+    while f"{point_helper_block}\n{point_helper_block}" in out:
+        out = out.replace(f"{point_helper_block}\n{point_helper_block}", point_helper_block)
+    out = re.sub(
+        r"(from src\.constants import CHART_COMPARE_ALPHA\n){2,}",
+        "from src.constants import CHART_COMPARE_ALPHA\n",
+        out,
+    )
+    compare_alpha_block = """  const compareAlpha = (() => {
+    const raw = Number((((data || {}).uiConfig || {}).chartCompareAlpha));
+    return Number.isFinite(raw) && raw > 0 ? raw : 1;
+  })();"""
+    while f"{compare_alpha_block}\n{compare_alpha_block}" in out:
+        out = out.replace(f"{compare_alpha_block}\n{compare_alpha_block}", compare_alpha_block)
+    return out
+
+
 def dashboard_text() -> str:
-    return "".join(DASHBOARD_PARTS)
+    return strip_public_benchmarks("".join(DASHBOARD_PARTS))
 
 
 def patch_build_replay(text: str) -> str:
     updated = text
     updated = updated.replace(
         'REPLAY_MONTHS = to_int(z.input("replay_months", "4"), 4)',
-        'REPLAY_MONTHS = to_int(z.input("replay_months", "12"), 12)',
+        'REPLAY_MONTHS = REPLAY_RECENT_MONTHS_DEFAULT',
+    )
+    updated = updated.replace(
+        f'REPLAY_MONTHS = to_int(z.input("replay_months", "{REPLAY_RECENT_MONTHS_DEFAULT}"), {REPLAY_RECENT_MONTHS_DEFAULT})',
+        'REPLAY_MONTHS = REPLAY_RECENT_MONTHS_DEFAULT',
     )
     updated = updated.replace(
         'REPLAY_WARMUP_MONTHS = to_int(z.input("replay_warmup_months", "4"), 4)',
-        'REPLAY_WARMUP_MONTHS = to_int(z.input("replay_warmup_months", "4"), 4)',
+        'REPLAY_WARMUP_MONTHS = REPLAY_WARMUP_MONTHS_DEFAULT',
+    )
+    updated = updated.replace(
+        f'REPLAY_WARMUP_MONTHS = to_int(z.input("replay_warmup_months", "{REPLAY_WARMUP_MONTHS_DEFAULT}"), {REPLAY_WARMUP_MONTHS_DEFAULT})',
+        'REPLAY_WARMUP_MONTHS = REPLAY_WARMUP_MONTHS_DEFAULT',
     )
     updated = updated.replace(
         'CHECKPOINT_SAMPLES = to_int(z.input("checkpoint_samples", "6"), 4)',
-        'CHECKPOINT_SAMPLES = to_int(z.input("checkpoint_samples", "6"), 6)',
+        'CHECKPOINT_SAMPLES = REPLAY_CHECKPOINT_SAMPLES_DEFAULT',
     )
-    marker = 'VNSTOCK_SOURCE = z.input("vnstock_source", "VCI").strip() or "VCI"'
+    updated = updated.replace(
+        f'CHECKPOINT_SAMPLES = to_int(z.input("checkpoint_samples", "{REPLAY_CHECKPOINT_SAMPLES_DEFAULT}"), {REPLAY_CHECKPOINT_SAMPLES_DEFAULT})',
+        'CHECKPOINT_SAMPLES = REPLAY_CHECKPOINT_SAMPLES_DEFAULT',
+    )
+    updated = updated.replace(
+        'REPLAY_RUN_LIMIT = to_int(z.input("replay_run_limit", "1"), 1)',
+        'REPLAY_RUN_LIMIT = REPLAY_RUN_LIMIT_DEFAULT',
+    )
+    updated = updated.replace(
+        f'REPLAY_RUN_LIMIT = to_int(z.input("replay_run_limit", "{REPLAY_RUN_LIMIT_DEFAULT}"), {REPLAY_RUN_LIMIT_DEFAULT})',
+        'REPLAY_RUN_LIMIT = REPLAY_RUN_LIMIT_DEFAULT',
+    )
+    marker = f'VNSTOCK_SOURCE = z.input("vnstock_source", "{REPLAY_VNSTOCK_SOURCE_DEFAULT}").strip() or "{REPLAY_VNSTOCK_SOURCE_DEFAULT}"'
+    updated = updated.replace(marker, 'VNSTOCK_SOURCE = REPLAY_VNSTOCK_SOURCE_DEFAULT')
     if marker in updated and "REPLAY_END_DATE" not in updated:
         updated = updated.replace(
             marker,
-            marker + '\nREPLAY_END_DATE = str(z.input("replay_end_date", "2026-02-28") or "2026-02-28").strip() or "2026-02-28"',
+            'VNSTOCK_SOURCE = REPLAY_VNSTOCK_SOURCE_DEFAULT' + '\nREPLAY_END_DATE = REPLAY_END_DATE_DEFAULT',
         )
+    updated = updated.replace(
+        f'REPLAY_END_DATE = str(z.input("replay_end_date", "{REPLAY_END_DATE_DEFAULT}") or "{REPLAY_END_DATE_DEFAULT}").strip() or "{REPLAY_END_DATE_DEFAULT}"',
+        'REPLAY_END_DATE = REPLAY_END_DATE_DEFAULT',
+    )
     if 'end_date=REPLAY_END_DATE,' not in updated:
         updated = updated.replace(
             '                vnstock_source=VNSTOCK_SOURCE,\n',
             '                vnstock_source=VNSTOCK_SOURCE,\n                end_date=REPLAY_END_DATE,\n',
         )
-    return updated.replace('checkpoint_samples", "4"', 'checkpoint_samples", "6"')
+    return updated
 
 
 def patch_note(path: Path) -> None:
@@ -467,8 +847,22 @@ def patch_note(path: Path) -> None:
     path.write_text(json.dumps(note, ensure_ascii=False, separators=(",", ":")), encoding="utf-8-sig")
 
 
+def iter_target_notes() -> list[Path]:
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in [LOCAL_NOTE, *sorted(RUNTIME_NOTE_DIR.glob(RUNTIME_NOTE_GLOB))]:
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(candidate)
+    return ordered
+
+
 def main() -> None:
-    for target in (LOCAL_NOTE, RUNTIME_NOTE):
+    for target in iter_target_notes():
         patch_note(target)
         print(f"patched {target}")
 
