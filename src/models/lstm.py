@@ -593,6 +593,7 @@ class PPOLSTMActorCritic(nn.Module):
     """
 
     CONCENTRATION_MIN = 1e-3
+    CONCENTRATION_MAX = 100.0
     ACTION_EPS = 1e-6
 
     def __init__(self, n_stocks: int, n_features: int,
@@ -672,7 +673,18 @@ class PPOLSTMActorCritic(nn.Module):
             last_linear.bias.fill_(bias_value)
 
     def _get_policy_dist(self, concentration: torch.Tensor) -> Dirichlet:
-        return Dirichlet(concentration)
+        safe_concentration = torch.nan_to_num(
+            concentration,
+            nan=self.CONCENTRATION_MIN,
+            posinf=self.CONCENTRATION_MAX,
+            neginf=self.CONCENTRATION_MIN,
+        )
+        safe_concentration = torch.clamp(
+            safe_concentration,
+            min=self.CONCENTRATION_MIN,
+            max=self.CONCENTRATION_MAX,
+        )
+        return Dirichlet(safe_concentration)
 
     def forward(self, market_state: torch.Tensor,
                 portfolio_state: torch.Tensor,
@@ -699,7 +711,24 @@ class PPOLSTMActorCritic(nn.Module):
         combined = torch.cat([lstm_features, portfolio_state], dim=-1)
 
         concentration_logits = self.actor_head(combined)
+        concentration_logits = torch.nan_to_num(
+            concentration_logits,
+            nan=0.0,
+            posinf=20.0,
+            neginf=-20.0,
+        )
         concentration_scores = F.softplus(concentration_logits) + self.CONCENTRATION_MIN
+        concentration_scores = torch.nan_to_num(
+            concentration_scores,
+            nan=self.CONCENTRATION_MIN,
+            posinf=self.CONCENTRATION_MAX,
+            neginf=self.CONCENTRATION_MIN,
+        )
+        concentration_scores = torch.clamp(
+            concentration_scores,
+            min=self.CONCENTRATION_MIN,
+            max=self.CONCENTRATION_MAX,
+        )
         if self.dirichlet_total_concentration > 0.0:
             concentration = concentration_scores / concentration_scores.sum(
                 dim=-1, keepdim=True

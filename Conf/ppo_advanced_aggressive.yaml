@@ -46,26 +46,26 @@ reward_excess_scale: 100.0
 reward_advanced_alpha: 0.05
 reward_advanced_beta: 1.10
 reward_advanced_gamma: 0.04
-trade_deadband: 0.0
-max_weight_change_per_step: 1.0
+trade_deadband: 0.001
+max_weight_change_per_step: 0.75
 
 hidden_size: 128
 num_layers: 2
 dropout: 0.1
 log_std_init: -0.5
-dirichlet_total_concentration: 0.0
+dirichlet_total_concentration: 3.0
 
-learning_rate: 0.0012
-n_steps: 2048
+learning_rate: 0.0008
+n_steps: 1536
 batch_size: 128
-n_epochs: 28
+n_epochs: 20
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.40
-ent_coef: 0.0
-vf_coef: 0.20
-max_grad_norm: 1.0
-target_kl: null
+clip_range: 0.30
+ent_coef: 0.0002
+vf_coef: 0.25
+max_grad_norm: 0.7
+target_kl: 0.10
 
 total_timesteps: 600000
 lr_decay: true
