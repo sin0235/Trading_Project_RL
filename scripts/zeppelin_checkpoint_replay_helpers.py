@@ -31,6 +31,7 @@ from src.data.data_processor import DataProcessor
 from src.data.download_data import DownloadData
 from src.utils.metrics import compute_all
 from scripts.dashboard_paths import (
+    COMPARE_ARTIFACT_PRIORITY,
     DDQ_COMPARE_LABEL,
     FIXED_PPO_REPLAY_DEFAULT_CHECKPOINT_ID,
     FIXED_PPO_REPLAY_RUN_ID,
@@ -465,6 +466,60 @@ def _compare_artifact_roots_for_checkpoint(project_root: str | Path, checkpoint_
     roots.append(checkpoint_path.parent)
     roots.extend(paths.ddq_compare_artifact_roots)
     return _dedupe_resolved_paths(roots)
+
+
+def _compare_checkpoint_candidates_for_root(root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    if root.exists():
+        candidates.extend(sorted(root.glob("best_model*.pt")))
+        candidates.extend(sorted((root / "checkpoints").glob("best_model*.pt")))
+        candidates.extend(sorted(root.glob("final_model*.pt")))
+        candidates.extend(sorted((root / "checkpoints").glob("final_model*.pt")))
+        candidates.extend(sorted(root.glob("checkpoint_*.pt")))
+        candidates.extend(sorted((root / "checkpoints").glob("checkpoint_*.pt")))
+        candidates.extend(sorted(root.glob("*.pt")))
+    candidates.extend(
+        [
+            root / "BranchingDDQ.pt",
+            root / "checkpoints" / "best_model.pt",
+            root / "best_model.pt",
+            root / "checkpoints" / "final_model.pt",
+            root / "final_model.pt",
+        ]
+    )
+    return _dedupe_resolved_paths(candidates)
+
+
+def _compare_artifact_specs(project_root: str | Path) -> list[dict[str, Any]]:
+    paths = DashboardProjectPaths.from_project_root(project_root)
+    specs: list[dict[str, Any]] = []
+    for dirname, label in COMPARE_ARTIFACT_PRIORITY:
+        compare_root = paths.compare_root / dirname
+        roots: list[Path] = [compare_root]
+        if compare_root.exists():
+            nested_runs = sorted(
+                [
+                    path
+                    for path in compare_root.iterdir()
+                    if path.is_dir() and path.name.lower() != "checkpoints"
+                ],
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            roots.extend(nested_runs)
+        roots = _dedupe_resolved_paths(roots)
+        checkpoint_candidates: list[Path] = []
+        for root in roots:
+            checkpoint_candidates.extend(_compare_checkpoint_candidates_for_root(root))
+        specs.append(
+            {
+                "dirname": dirname,
+                "label": label,
+                "roots": roots,
+                "checkpoint_candidates": _dedupe_resolved_paths(checkpoint_candidates),
+            }
+        )
+    return specs
 
 
 def _detect_compare_artifact_agent(project_root: str | Path, checkpoint_path: Path) -> str:
@@ -1546,16 +1601,25 @@ def _build_ddq_compare_overlay(
     base_config: dict[str, Any],
     dataset: DatasetBundle,
 ) -> dict[str, Any] | None:
-    paths = DashboardProjectPaths.from_project_root(project_root)
-    checkpoint_path = next((candidate.resolve() for candidate in paths.ddq_checkpoint_candidates if candidate.exists()), None)
-    if checkpoint_path is None:
-        return None
+    overlays = _build_compare_overlays(project_root=project_root, base_config=base_config, dataset=dataset)
+    return overlays[0] if overlays else None
+
+
+def _build_compare_overlay(
+    project_root: str | Path,
+    base_config: dict[str, Any],
+    dataset: DatasetBundle,
+    checkpoint_path: Path,
+    preferred_label: str | None = None,
+) -> dict[str, Any]:
+    checkpoint_path = checkpoint_path.resolve()
 
     ddq_config, config_source, compare_kind, compare_label = _load_ddq_compare_config(
         project_root=project_root,
         checkpoint_path=checkpoint_path,
         base_config=base_config,
     )
+    compare_label = str(preferred_label or compare_label or DDQ_COMPARE_LABEL)
 
     if [str(t).upper() for t in ddq_config["tickers"]] != [str(t).upper() for t in base_config["tickers"]]:
         raise ValueError("Checkpoint DDQ cố định không cùng rổ ticker với replay PPO hiện tại.")
@@ -1604,13 +1668,47 @@ def _build_ddq_compare_overlay(
     values = values[keep_from:]
 
     return {
-        "checkpoint_id": "ddq_best",
+        "checkpoint_id": f"compare_{compare_label.lower().replace(' ', '_').replace('-', '_')}",
         "label": compare_label,
         "checkpoint_path": str(checkpoint_path),
         "config_source": config_source,
         "agent": compare_kind,
         "values": values,
     }
+
+
+def _build_compare_overlays(
+    project_root: str | Path,
+    base_config: dict[str, Any],
+    dataset: DatasetBundle,
+) -> list[dict[str, Any]]:
+    overlays: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for spec in _compare_artifact_specs(project_root):
+        checkpoint_candidates = spec.get("checkpoint_candidates") or []
+        checkpoint_path = next(
+            (candidate.resolve() for candidate in checkpoint_candidates if isinstance(candidate, Path) and candidate.exists()),
+            None,
+        )
+        if checkpoint_path is None:
+            continue
+        path_key = str(checkpoint_path)
+        if path_key in seen_paths:
+            continue
+        seen_paths.add(path_key)
+        try:
+            overlays.append(
+                _build_compare_overlay(
+                    project_root=project_root,
+                    base_config=base_config,
+                    dataset=dataset,
+                    checkpoint_path=checkpoint_path,
+                    preferred_label=str(spec.get("label") or DDQ_COMPARE_LABEL),
+                )
+            )
+        except Exception:
+            continue
+    return overlays
 
 
 def _build_benchmark_replay(
@@ -1700,7 +1798,7 @@ def _checkpoint_payload(
     config: dict[str, Any],
     dataset: DatasetBundle,
     benchmark: dict[str, Any],
-    ddq_compare: dict[str, Any] | None = None,
+    compare_overlays: list[dict[str, Any]] | None = None,
     max_frames: int | None = None,
 ) -> dict[str, Any]:
     model = _build_model(config, checkpoint_info)
@@ -1726,10 +1824,20 @@ def _checkpoint_payload(
 
     eq_values = benchmark["equal_weight_values"]
     bh_values = benchmark["buy_hold_values"]
-    ddq_values = list(ddq_compare.get("values") or []) if ddq_compare else []
+    overlay_series = [
+        {
+            "checkpoint_id": str(item.get("checkpoint_id") or ""),
+            "label": str(item.get("label") or DDQ_COMPARE_LABEL),
+            "checkpoint_path": str(item.get("checkpoint_path") or ""),
+            "config_source": item.get("config_source"),
+            "agent": str(item.get("agent") or ""),
+            "values": list(item.get("values") or []),
+        }
+        for item in (compare_overlays or [])
+        if item
+    ]
     lengths = [len(values), len(eq_values), len(bh_values)]
-    if ddq_values:
-        lengths.append(len(ddq_values))
+    lengths.extend(len(item["values"]) for item in overlay_series if item["values"])
     common_length = min(lengths)
     if common_length <= 0:
         raise ValueError("Replay checkpoint không có đủ dữ liệu để dựng theo ngày.")
@@ -1737,26 +1845,30 @@ def _checkpoint_payload(
         common_length != len(values)
         or common_length != len(eq_values)
         or common_length != len(bh_values)
-        or (ddq_values and common_length != len(ddq_values))
+        or any(item["values"] and common_length != len(item["values"]) for item in overlay_series)
     ):
         frames = frames[:common_length]
         values = values[:common_length]
         eq_values = eq_values[:common_length]
         bh_values = bh_values[:common_length]
-        if ddq_values:
-            ddq_values = ddq_values[:common_length]
+        for item in overlay_series:
+            if item["values"]:
+                item["values"] = item["values"][:common_length]
 
     initial_balance = float(config["initial_balance"])
     model_drawdown_pct = _drawdown_pct_series(values, initial_balance)
     eq_drawdown_pct = _drawdown_pct_series(eq_values, initial_balance)
     bh_drawdown_pct = _drawdown_pct_series(bh_values, initial_balance)
     model_rolling_sharpe, model_rolling_sortino = _rolling_quality_series(values, initial_balance)
-    ddq_drawdown_pct: list[float] = []
-    ddq_rolling_sharpe: list[float] = []
-    ddq_rolling_sortino: list[float] = []
-    if ddq_values:
-        ddq_drawdown_pct = _drawdown_pct_series(ddq_values, initial_balance)
-        ddq_rolling_sharpe, ddq_rolling_sortino = _rolling_quality_series(ddq_values, initial_balance)
+    for item in overlay_series:
+        item_values = item["values"]
+        item["drawdown_series"] = _drawdown_pct_series(item_values, initial_balance) if item_values else []
+        if item_values:
+            item_rolling_sharpe, item_rolling_sortino = _rolling_quality_series(item_values, initial_balance)
+        else:
+            item_rolling_sharpe, item_rolling_sortino = [], []
+        item["rolling_sharpe_series"] = item_rolling_sharpe
+        item["rolling_sortino_series"] = item_rolling_sortino
 
     for idx, frame in enumerate(frames):
         equal_value = float(eq_values[idx])
@@ -1785,55 +1897,82 @@ def _checkpoint_payload(
         bh_drawdown_pct = [bh_drawdown_pct[i] for i in idxs]
         model_rolling_sharpe = [model_rolling_sharpe[i] for i in idxs]
         model_rolling_sortino = [model_rolling_sortino[i] for i in idxs]
-        if ddq_values:
-            ddq_values = [ddq_values[i] for i in idxs]
-            ddq_drawdown_pct = [ddq_drawdown_pct[i] for i in idxs]
-            ddq_rolling_sharpe = [ddq_rolling_sharpe[i] for i in idxs]
-            ddq_rolling_sortino = [ddq_rolling_sortino[i] for i in idxs]
+        for item in overlay_series:
+            if item["values"]:
+                item["values"] = [item["values"][i] for i in idxs]
+                item["drawdown_series"] = [item["drawdown_series"][i] for i in idxs]
+                item["rolling_sharpe_series"] = [item["rolling_sharpe_series"][i] for i in idxs]
+                item["rolling_sortino_series"] = [item["rolling_sortino_series"][i] for i in idxs]
 
     for frame in frames:
         _slim_replay_frame_for_zeppelin(frame)
 
-    series_pool = values + eq_values + bh_values + (ddq_values if ddq_values else [])
+    series_pool = values + eq_values + bh_values
+    for item in overlay_series:
+        series_pool.extend(item["values"])
     series_min = min(series_pool)
     series_max = max(series_pool)
     model_points, marker_xs, chart_min, chart_max = _svg_points(values, min_value=series_min, max_value=series_max)
     eq_points, _, _, _ = _svg_points(eq_values, min_value=series_min, max_value=series_max)
     bh_points, _, _, _ = _svg_points(bh_values, min_value=series_min, max_value=series_max)
-    drawdown_pool = model_drawdown_pct + bh_drawdown_pct + (ddq_drawdown_pct if ddq_drawdown_pct else [])
-    drawdown_pool.extend(eq_drawdown_pct)
+    drawdown_pool = model_drawdown_pct + bh_drawdown_pct + eq_drawdown_pct
+    for item in overlay_series:
+        drawdown_pool.extend(item["drawdown_series"])
     drawdown_min = min(drawdown_pool) if drawdown_pool else -1.0
     drawdown_max = max(drawdown_pool) if drawdown_pool else 0.0
     drawdown_points, _, _, _ = _svg_points(model_drawdown_pct, min_value=drawdown_min, max_value=drawdown_max)
     eq_drawdown_points, _, _, _ = _svg_points(eq_drawdown_pct, min_value=drawdown_min, max_value=drawdown_max)
     bh_drawdown_points, _, _, _ = _svg_points(bh_drawdown_pct, min_value=drawdown_min, max_value=drawdown_max)
     quality_pool = model_rolling_sharpe + model_rolling_sortino
-    quality_pool.extend(ddq_rolling_sharpe)
+    for item in overlay_series:
+        quality_pool.extend(item["rolling_sharpe_series"])
+        quality_pool.extend(item["rolling_sortino_series"])
     quality_min = min(quality_pool) if quality_pool else -1.0
     quality_max = max(quality_pool) if quality_pool else 1.0
     rolling_sharpe_points, _, _, _ = _svg_points(model_rolling_sharpe, min_value=quality_min, max_value=quality_max)
     rolling_sortino_points, _, _, _ = _svg_points(model_rolling_sortino, min_value=quality_min, max_value=quality_max)
-    ddq_points = None
-    ddq_summary = None
-    ddq_drawdown_points = None
-    ddq_rolling_sharpe_points = None
-    ddq_rolling_sortino_points = None
-    if ddq_values:
-        ddq_points, _, _, _ = _svg_points(ddq_values, min_value=series_min, max_value=series_max)
-        ddq_summary = {
-            **_series_summary(ddq_values, float(config["initial_balance"])),
-            "risk_summary": _risk_summary(ddq_values, float(config["initial_balance"])),
-        }
-        ddq_drawdown_points, _, _, _ = _svg_points(ddq_drawdown_pct, min_value=drawdown_min, max_value=drawdown_max)
-        ddq_rolling_sharpe_points, _, _, _ = _svg_points(
-            ddq_rolling_sharpe,
+    compare_overlay_payloads: list[dict[str, Any]] = []
+    for item in overlay_series:
+        item_values = item["values"]
+        if not item_values:
+            continue
+        overlay_points, _, _, _ = _svg_points(item_values, min_value=series_min, max_value=series_max)
+        overlay_drawdown_points, _, _, _ = _svg_points(
+            item["drawdown_series"],
+            min_value=drawdown_min,
+            max_value=drawdown_max,
+        )
+        overlay_rolling_sharpe_points, _, _, _ = _svg_points(
+            item["rolling_sharpe_series"],
             min_value=quality_min,
             max_value=quality_max,
         )
-        ddq_rolling_sortino_points, _, _, _ = _svg_points(
-            ddq_rolling_sortino,
+        overlay_rolling_sortino_points, _, _, _ = _svg_points(
+            item["rolling_sortino_series"],
             min_value=quality_min,
             max_value=quality_max,
+        )
+        compare_overlay_payloads.append(
+            {
+                "checkpoint_id": item["checkpoint_id"],
+                "label": item["label"],
+                "checkpoint_path": item["checkpoint_path"],
+                "config_source": item["config_source"],
+                "agent": item["agent"],
+                "summary": {
+                    **_series_summary(item_values, float(config["initial_balance"])),
+                    "risk_summary": _risk_summary(item_values, float(config["initial_balance"])),
+                },
+                "chart": {
+                    "model_points": overlay_points,
+                    "drawdown_points": overlay_drawdown_points,
+                    "drawdown_series": item["drawdown_series"],
+                    "rolling_sharpe_points": overlay_rolling_sharpe_points,
+                    "rolling_sharpe_series": item["rolling_sharpe_series"],
+                    "rolling_sortino_points": overlay_rolling_sortino_points,
+                    "rolling_sortino_series": item["rolling_sortino_series"],
+                },
+            }
         )
     for idx, frame in enumerate(frames):
         frame["marker_x"] = marker_xs[idx] if idx < len(marker_xs) else None
@@ -1855,26 +1994,8 @@ def _checkpoint_payload(
             "worst_value": round(min(values), 2),
             "risk_summary": _risk_summary(values, float(config["initial_balance"])),
         },
-        "ddq_compare": (
-            {
-                "checkpoint_id": ddq_compare["checkpoint_id"],
-                "label": ddq_compare["label"],
-                "checkpoint_path": ddq_compare["checkpoint_path"],
-                "config_source": ddq_compare["config_source"],
-                "summary": ddq_summary,
-                "chart": {
-                    "model_points": ddq_points,
-                    "drawdown_points": ddq_drawdown_points,
-                    "drawdown_series": ddq_drawdown_pct,
-                    "rolling_sharpe_points": ddq_rolling_sharpe_points,
-                    "rolling_sharpe_series": ddq_rolling_sharpe,
-                    "rolling_sortino_points": ddq_rolling_sortino_points,
-                    "rolling_sortino_series": ddq_rolling_sortino,
-                },
-            }
-            if ddq_compare and ddq_points and ddq_summary
-            else None
-        ),
+        "ddq_compare": compare_overlay_payloads[0] if compare_overlay_payloads else None,
+        "compare_overlays": compare_overlay_payloads,
         "chart": {
             "model_points": model_points,
             "equal_weight_points": eq_points,
@@ -1977,15 +2098,15 @@ def build_checkpoint_replay_payload(
             dataset_cache[cache_key] = (dataset, benchmark)
 
         dataset, benchmark = dataset_cache[cache_key]
-        ddq_compare = None
+        compare_overlays: list[dict[str, Any]] = []
         try:
-            ddq_compare = _build_ddq_compare_overlay(
+            compare_overlays = _build_compare_overlays(
                 project_root=project_root,
                 base_config=config,
                 dataset=dataset,
             )
         except Exception as exc:
-            warnings.append(f"Không dựng được line {DDQ_COMPARE_LABEL}: {exc}")
+            warnings.append(f"Không dựng được line compare cố định: {exc}")
 
         checkpoint_payloads = [
             _checkpoint_payload(
@@ -1993,7 +2114,7 @@ def build_checkpoint_replay_payload(
                 config=config,
                 dataset=dataset,
                 benchmark=benchmark,
-                ddq_compare=ddq_compare,
+                compare_overlays=compare_overlays,
                 max_frames=max_frames_per_checkpoint,
             )
             for checkpoint in checkpoints
@@ -2061,7 +2182,10 @@ def build_checkpoint_replay_payload(
                     if worst_checkpoint["checkpoint_id"] != default_checkpoint["checkpoint_id"]
                     else first_baseline_checkpoint["checkpoint_id"]
                 ),
-                "ddqCompareAvailable": bool(ddq_compare),
+                "ddqCompareAvailable": bool(compare_overlays),
+                "compareOverlaysAvailable": bool(compare_overlays),
+                "compareOverlayCount": len(compare_overlays),
+                "compareOverlayLabels": [str(item.get("label") or DDQ_COMPARE_LABEL) for item in compare_overlays],
             }
         )
         warnings.extend(dataset.warnings)

@@ -43,3 +43,4 @@ results/runs/*
 .zeppelin_cache/
 *.html
 *.txt
+.pytest_tmp/
