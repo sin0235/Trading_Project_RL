@@ -42,35 +42,35 @@ max_steps_eval: 9999
 reward_scaling: 1.0
 reward_name: advanced
 reward_window: 20
-reward_excess_scale: 100.0
-reward_advanced_alpha: 0.05
-reward_advanced_beta: 1.10
-reward_advanced_gamma: 0.04
-trade_deadband: 0.001
-max_weight_change_per_step: 0.75
+reward_excess_scale: 90.0
+reward_advanced_alpha: 0.07
+reward_advanced_beta: 0.80
+reward_advanced_gamma: 0.025
+trade_deadband: 0.002
+max_weight_change_per_step: 0.45
 
 hidden_size: 128
 num_layers: 2
 dropout: 0.1
 log_std_init: -0.5
-dirichlet_total_concentration: 3.0
+dirichlet_total_concentration: 8.0
 
-learning_rate: 0.0008
-n_steps: 1536
-batch_size: 128
-n_epochs: 20
+learning_rate: 0.0005
+n_steps: 2048
+batch_size: 256
+n_epochs: 18
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.30
-ent_coef: 0.0002
-vf_coef: 0.25
-max_grad_norm: 0.7
-target_kl: 0.10
+clip_range: 0.28
+ent_coef: 0.0015
+vf_coef: 0.30
+max_grad_norm: 0.6
+target_kl: 0.06
 
 total_timesteps: 600000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.0001
+min_learning_rate: 0.00006
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:
