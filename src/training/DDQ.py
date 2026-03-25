@@ -54,7 +54,7 @@ DEFAULT_CONFIG = {
     "max_steps_train": 512,
     "max_steps_eval": 9999,
     "reward_scaling": 1.0,
-    "reward_name": "sharpe",
+    "reward_name": "advanced",
     "reward_window": 30,
 
     "hidden_size": 128,
