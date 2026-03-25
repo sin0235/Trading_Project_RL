@@ -42,9 +42,10 @@ class AdvancedRewardFunction:
             self.returns_history.append(log_return)
 
             # 2. Thành phần Rủi ro (Volatility Penalty)
+            history_array = np.array([x if x < 0 else 0 for x in self.returns_history])
             vol_penalty = 0.0
             if len(self.returns_history) >= 2:
-                vol_penalty = float(np.std(self.returns_history))
+                vol_penalty = float(np.std(history_array))
 
             # 3. Thành phần Sụt giảm (Drawdown Penalty)
             self.max_portfolio_value = max(self.max_portfolio_value, v_new)
@@ -68,9 +69,9 @@ class Advanced1RewardFunction:
     def __init__(
         self,
         window: int = 30,
-        alpha: float = 0.1,  # Trọng số cho Volatility (Rủi ro)
+        alpha: float = 0.15,  # Trọng số cho Volatility (Rủi ro)
         beta: float = 0.5,   # Trọng số cho Max Drawdown (Sụt giảm)
-        gamma: float = 0.5  # Trọng số cho Transaction Penalty (Chi phí)
+        gamma: float = 0.05  # Trọng số cho Transaction Penalty (Chi phí)
     ):
         self.window = window
         self.alpha = alpha
@@ -102,21 +103,12 @@ class Advanced1RewardFunction:
         self.max_portfolio_value = max(self.max_portfolio_value, v_new)
         drawdown = (self.max_portfolio_value - v_new) / self.max_portfolio_value
         
-        dd_threshold = 0.10
-        if drawdown > dd_threshold:
-            drawdown_penalty = drawdown + (drawdown - dd_threshold) ** 2 * 5.0
+        dd_threshold = 0.20
+        if drawdown >= dd_threshold:
+            drawdown_penalty = 0.5
         else:
             drawdown_penalty = drawdown
         
-        self.dd_duration = (self.dd_duration + 1) if drawdown > 0.03 else 0
-        duration_penalty = min(self.dd_duration * 0.0005, 0.05)  # cap
-
-        # 3. Recovery bonus
-        recovery_bonus = 0.0
-        if hasattr(self, 'prev_drawdown') and self.prev_drawdown > 0.05:
-            if drawdown < self.prev_drawdown:
-                recovery_bonus = (self.prev_drawdown - drawdown) * 1.5
-        self.prev_drawdown = drawdown
 
         # 4. Turnover penalty
         turnover_penalty = 0.0
@@ -127,9 +119,7 @@ class Advanced1RewardFunction:
         reward = (log_return
                 - self.alpha * vol_penalty
                 - self.beta * drawdown_penalty
-                - duration_penalty
-                - self.gamma * turnover_penalty
-                + recovery_bonus)
+                - self.gamma * turnover_penalty)
 
         # Soft clip thay vì hard clip
         return float(np.tanh(reward * 8) * 0.6)
