@@ -1,0 +1,89 @@
+tickers:
+  - ACB
+  - BID
+  - BVH
+  - CTG
+  - FPT
+  - GAS
+  - HPG
+  - MBB
+  - MSN
+  - MWG
+  - SHB
+  - SSI
+  - STB
+  - VCB
+  - VIC
+  - VNM
+
+features:
+  - close_norm
+  - return_1d
+  - return_5d
+  - return_20d
+  - macd
+  - rsi
+  - adx
+  - volume_norm
+  - volatility_20d
+
+window_size: 30
+data_path: data/processed_v2
+
+train_ratio: 0.7
+val_ratio: 0.15
+test_ratio: 0.15
+
+initial_balance: 1000000000
+fee_rate: 0.001
+max_steps_train: 378
+max_steps_eval: 9999
+
+reward_scaling: 1.0
+reward_name: advanced
+reward_window: 20
+reward_excess_scale: 90.0
+reward_advanced_alpha: 0.07
+reward_advanced_beta: 0.80
+reward_advanced_gamma: 0.025
+trade_deadband: 0.002
+max_weight_change_per_step: 0.45
+
+hidden_size: 128
+num_layers: 2
+dropout: 0.1
+log_std_init: -0.5
+dirichlet_total_concentration: 8.0
+
+learning_rate: 0.0005
+n_steps: 2048
+batch_size: 256
+n_epochs: 18
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.28
+ent_coef: 0.0015
+vf_coef: 0.30
+max_grad_norm: 0.6
+target_kl: 0.06
+
+total_timesteps: 600000
+lr_decay: true
+lr_schedule: cosine
+min_learning_rate: 0.00006
+eval_freq: 5
+save_freq: 5
+milestone_checkpoint_steps:
+  - 150000
+  - 300000
+  - 450000
+  - 600000
+n_eval_episodes: 3
+early_stop_patience_evals: 0
+early_stop_min_delta: 0.005
+early_stop_min_evals: 8
+early_stop_baseline: off
+early_stop_baseline_patience_evals: 0
+
+seed: 42
+device: cpu

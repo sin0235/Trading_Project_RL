@@ -10,7 +10,6 @@ __pycache__/
 
 *.json
 *.xml
-*.yaml
 *.yml
 !configs/*.yaml
 !Conf/ddq_conf.yaml

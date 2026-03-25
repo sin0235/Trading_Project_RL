@@ -351,6 +351,15 @@ class PPOAgent:
                     mb_market, mb_portfolio, mb_actions, hidden=None
                 )
                 new_val = new_val.squeeze(-1)
+                if not (
+                    torch.isfinite(new_lp).all()
+                    and torch.isfinite(entropy).all()
+                    and torch.isfinite(new_val).all()
+                ):
+                    raise ValueError(
+                        "PPO update sinh ra non-finite values trong policy/value head. "
+                        "Hãy giảm độ aggressive của config PPO."
+                    )
 
                 # PPO clipped surrogate
                 log_ratio = new_lp - mb_old_lp
@@ -370,6 +379,11 @@ class PPOAgent:
                 entropy_loss = -entropy.mean()
 
                 loss = policy_loss + self.vf_coef * value_loss + self.ent_coef * entropy_loss
+                if not torch.isfinite(loss):
+                    raise ValueError(
+                        "PPO loss trở thành non-finite. "
+                        "Config hiện tại quá aggressive hoặc dữ liệu đầu vào có vấn đề."
+                    )
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()

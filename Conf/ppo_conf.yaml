@@ -27,13 +27,8 @@ features:
   - volume_norm
   - volatility_20d
 
-# ============================================================
-#  WINDOW SIZE
-#  30 la du cho LSTM bat pattern ngan-trung han.
-#  60 tang input size gap doi (60*16*9=8640) nhung khong
-#  cho them gia tri tuong xung, LSTM kho hoc hon.
-# ============================================================
-window_size: 30
+# Fallback theo run ppo_20260324_044152, nhung giu advanced reward.
+window_size: 60
 
 data_path: data/processed_v2
 
@@ -50,11 +45,14 @@ reward_scaling: 1.0
 reward_name: advanced
 reward_window: 20
 reward_sharpe_scale: 1.0
-reward_excess_scale: 60.0
-reward_drawdown_scale: 2.0
-reward_turnover_scale: 0.3
-trade_deadband: 0.015
-max_weight_change_per_step: 0.12
+reward_excess_scale: 80.0
+reward_drawdown_scale: 1.5
+reward_turnover_scale: 0.15
+reward_advanced_alpha: 0.10
+reward_advanced_beta: 0.50
+reward_advanced_gamma: 0.01
+trade_deadband: 0.01
+max_weight_change_per_step: 0.15
 
 # ============================================================
 #  MODEL (LSTM)
@@ -70,14 +68,14 @@ dirichlet_total_concentration: 16.0
 learning_rate: 0.0003
 n_steps: 2048
 batch_size: 256
-n_epochs: 12
+n_epochs: 10
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.2
+clip_range: 0.20
 ent_coef: 0.01
-vf_coef: 0.5
+vf_coef: 0.50
 max_grad_norm: 0.5
-target_kl: 0.03
+target_kl: 0.02
 
 # ============================================================
 #  TRAINING SCHEDULE

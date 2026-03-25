@@ -14,13 +14,15 @@ class AdvancedRewardFunction:
         window: int = 30,
         alpha: float = 0.1,  # Trọng số cho Volatility (Rủi ro)
         beta: float = 0.5,   # Trọng số cho Max Drawdown (Sụt giảm)
-        gamma: float = 0.5  # Trọng số cho Transaction Penalty (Chi phí)
+        gamma: float = 0.5,  # Trọng số cho Transaction Penalty (Chi phí)
+        excess_scale: float = 80.0,
     ):
         self.window = window
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        
+        self.excess_scale = excess_scale
+
         self.returns_history = deque(maxlen=window)
         self.max_portfolio_value = -np.inf
 
@@ -28,62 +30,122 @@ class AdvancedRewardFunction:
         self.returns_history.clear()
         self.max_portfolio_value = -np.inf
 
-    def calculate(self, v_old: float, v_new: float, trade_amounts: np.ndarray = None, prices: np.ndarray = None) -> float:
+    @staticmethod
+    def _safe_log_return(v_from: float, v_to: float) -> float:
+        if v_from <= 0 or v_to <= 0:
+            return 0.0
+        return float(np.log(v_to / v_from))
+
+    @staticmethod
+    def _equal_weight_cash_benchmark_log_return(
+        execution_prices: np.ndarray | None,
+        next_prices: np.ndarray | None,
+    ) -> float:
+        if execution_prices is None or next_prices is None:
+            return 0.0
+
+        exec_arr = np.asarray(execution_prices, dtype=np.float64)
+        next_arr = np.asarray(next_prices, dtype=np.float64)
+        valid = np.isfinite(exec_arr) & np.isfinite(next_arr) & (exec_arr > 0) & (next_arr > 0)
+        if not np.any(valid):
+            return 0.0
+
+        stock_growth = next_arr[valid] / exec_arr[valid]
+        benchmark_growth = (float(np.sum(stock_growth)) + 1.0) / (len(stock_growth) + 1.0)
+        return float(np.log(max(benchmark_growth, 1e-12)))
+
+    def calculate(
+        self,
+        v_old: float,
+        v_new: float,
+        trade_amounts: np.ndarray = None,
+        prices: np.ndarray = None,
+        *,
+        execution_prices: np.ndarray | None = None,
+        next_prices: np.ndarray | None = None,
+        post_trade_value: float | None = None,
+    ) -> float:
             """
-            Hàm phần thưởng lai (Hybrid Reward):
-            R = Log_Return - (alpha * Volatility) - (beta * Drawdown) - (gamma * Turnover)
+            Reward hybrid mới cho PPO:
+            R = excess_scale * (excess_return - alpha * volatility)
+                - beta * drawdown
+                - gamma * turnover
+
+            - Dùng return thực sự sau khi khớp lệnh ở open -> close.
+            - So với benchmark equal-weight + cash cùng nhịp.
+            - Giữ tương thích ngược với lời gọi cũ chỉ truyền `prices`.
             """
 
-            if v_old <= 0 or v_new <= 0:
-                return -1.0 # Phạt nặng nếu cháy tài khoản
+            if execution_prices is None and prices is not None:
+                execution_prices = prices
+            if post_trade_value is None:
+                post_trade_value = v_old
 
-            # 1. Thành phần Lợi nhuận (Log Return)
-            log_return = float(np.log(v_new / v_old))
-            self.returns_history.append(log_return)
+            if v_old <= 0 or post_trade_value <= 0 or v_new <= 0:
+                return -5.0
 
-            # 2. Thành phần Rủi ro (Volatility Penalty)
-            history_array = np.array([x if x < 0 else 0 for x in self.returns_history])
+            # 1. Thành phần lợi nhuận vượt benchmark
+            portfolio_log_return = self._safe_log_return(post_trade_value, v_new)
+            benchmark_log_return = self._equal_weight_cash_benchmark_log_return(
+                execution_prices=execution_prices,
+                next_prices=next_prices,
+            )
+            excess_log_return = portfolio_log_return - benchmark_log_return
+            self.returns_history.append(excess_log_return)
+
+            # 2. Thành phần rủi ro (volatility trên excess return)
             vol_penalty = 0.0
             if len(self.returns_history) >= 2:
-                vol_penalty = float(np.std(history_array))
+                vol_penalty = float(np.std(self.returns_history))
 
-            # 3. Thành phần Sụt giảm (Drawdown Penalty)
+            # 3. Thành phần sụt giảm (drawdown)
             self.max_portfolio_value = max(self.max_portfolio_value, v_new)
             drawdown = (self.max_portfolio_value - v_new) / self.max_portfolio_value
             drawdown_penalty = float(drawdown)
 
-            # 4. Thành phần Chi phí (Transaction/Turnover Penalty) - ĐÃ CHUẨN HÓA
+            # 4. Thành phần chi phí giao dịch (turnover ratio)
             turnover_penalty = 0.0
-            if trade_amounts is not None and prices is not None:
-                # Tính tổng giá trị tiền của các lệnh giao dịch (Mua + Bán)
-                trade_value = np.sum(np.abs(trade_amounts) * prices)
-                # Tính tỷ lệ: Giá trị giao dịch / Tổng tài sản
-                turnover_penalty = float(trade_value / v_old)
+            if trade_amounts is not None and execution_prices is not None:
+                trade_value = float(
+                    np.sum(
+                        np.abs(np.asarray(trade_amounts, dtype=np.float64))
+                        * np.asarray(execution_prices, dtype=np.float64)
+                    )
+                )
+                turnover_penalty = trade_value / max(post_trade_value, 1e-12)
 
-            # TỔNG HỢP REWARD
-            reward = log_return - (self.alpha * vol_penalty) - (self.beta * drawdown_penalty) - (self.gamma * turnover_penalty)
+            reward = (
+                self.excess_scale * (excess_log_return - self.alpha * vol_penalty)
+                - self.beta * drawdown_penalty
+                - self.gamma * turnover_penalty
+            )
 
-            # Clip reward để tránh nhiễu quá lớn cho Agent
-            return reward
+            return float(np.clip(reward, -5.0, 5.0))
+
+
 class Advanced1RewardFunction:
     def __init__(
         self,
         window: int = 30,
-        alpha: float = 0.15,  # Trọng số cho Volatility (Rủi ro)
-        beta: float = 0.5,   # Trọng số cho Max Drawdown (Sụt giảm)
-        gamma: float = 0.05  # Trọng số cho Transaction Penalty (Chi phí)
+        alpha: float = 0.1,
+        beta: float = 0.5,
+        gamma: float = 0.5,
     ):
         self.window = window
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
-        
+
         self.returns_history = deque(maxlen=window)
         self.max_portfolio_value = -np.inf
+        self.dd_duration = 0
+        self.prev_drawdown = 0.0
 
     def reset(self):
         self.returns_history.clear()
         self.max_portfolio_value = -np.inf
+        self.dd_duration = 0
+        self.prev_drawdown = 0.0
 
     def calculate(self, v_old, v_new, trade_amounts=None, prices=None):
         if v_old <= 0 or v_new <= 0:
@@ -103,12 +165,21 @@ class Advanced1RewardFunction:
         self.max_portfolio_value = max(self.max_portfolio_value, v_new)
         drawdown = (self.max_portfolio_value - v_new) / self.max_portfolio_value
         
-        dd_threshold = 0.20
-        if drawdown >= dd_threshold:
-            drawdown_penalty = 0.5
+        dd_threshold = 0.10
+        if drawdown > dd_threshold:
+            drawdown_penalty = drawdown + (drawdown - dd_threshold) ** 2 * 5.0
         else:
             drawdown_penalty = drawdown
         
+        self.dd_duration = (self.dd_duration + 1) if drawdown > 0.03 else 0
+        duration_penalty = min(self.dd_duration * 0.0005, 0.05)  # cap
+
+        # 3. Recovery bonus
+        recovery_bonus = 0.0
+        if self.prev_drawdown > 0.05:
+            if drawdown < self.prev_drawdown:
+                recovery_bonus = (self.prev_drawdown - drawdown) * 1.5
+        self.prev_drawdown = drawdown
 
         # 4. Turnover penalty
         turnover_penalty = 0.0
@@ -119,10 +190,14 @@ class Advanced1RewardFunction:
         reward = (log_return
                 - self.alpha * vol_penalty
                 - self.beta * drawdown_penalty
-                - self.gamma * turnover_penalty)
+                - duration_penalty
+                - self.gamma * turnover_penalty
+                + recovery_bonus)
 
         # Soft clip thay vì hard clip
         return float(np.tanh(reward * 8) * 0.6)
+
+
 class SharpeRewardFunction:
     """
     Reward dua tren rolling Sharpe ratio cua excess return.

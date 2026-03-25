@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     # --- Data ---
     "tickers": TICKERS,
     "features": FEATURES,
-    "window_size": WINDOW_SIZE,
+    "window_size": 60,
     "data_path": DATA_PATH,
     "train_ratio": 0.7,
     "val_ratio": 0.15,
@@ -47,16 +47,11 @@ DEFAULT_CONFIG = {
     "initial_balance": 1_000_000_000,
     "fee_rate": 0.001,
     "max_steps_train": 378,
-    "max_steps_train": 378,
     "max_steps_eval": 9999,
     "reward_scaling": 1.0,
-    "reward_name": "sharpe",
-    "reward_window": 20,
+    "reward_name": "advanced",
     "reward_window": 20,
     "reward_sharpe_scale": 1.0,
-    "reward_excess_scale": 60.0,
-    "reward_drawdown_scale": 2.0,
-    "reward_turnover_scale": 0.3,
     "reward_excess_scale": 80.0,
     "reward_drawdown_scale": 1.5,
     "reward_turnover_scale": 0.15,
@@ -69,8 +64,6 @@ DEFAULT_CONFIG = {
     "reward_advanced_gamma": 0.01,
     "trade_deadband": 0.01,
     "max_weight_change_per_step": 0.15,
-    "trade_deadband": 0.015,
-    "max_weight_change_per_step": 0.12,
 
     # --- Model (LSTM) ---
     "hidden_size": 128,
@@ -80,37 +73,32 @@ DEFAULT_CONFIG = {
     "dirichlet_total_concentration": 16.0,
 
     # --- PPO ---
-    "learning_rate": 2.5e-4,
+    "learning_rate": 3e-4,
     "n_steps": 2048,
-    "batch_size": 256,
-    "n_epochs": 12,
     "batch_size": 256,
     "n_epochs": 10,
     "gamma": 0.99,
     "gae_lambda": 0.95,
     "clip_range": 0.2,
-    "ent_coef": 0.002,
-    "clip_range": 0.2,
     "ent_coef": 0.01,
     "vf_coef": 0.5,
     "max_grad_norm": 0.5,
-    "target_kl": 0.03,
     "target_kl": 0.02,
 
     # --- Schedule ---
     "total_timesteps": 600_000,
     "lr_decay": True,
     "lr_schedule": "cosine",
-    "min_learning_rate": 2.5e-5,
+    "min_learning_rate": 3e-5,
     "eval_freq": 5,
     "save_freq": 5,
     "milestone_checkpoint_steps": [100_000, 300_000, 500_000],
     "n_eval_episodes": 3,
-    "early_stop_patience_evals": 10,
+    "early_stop_patience_evals": 0,
     "early_stop_min_delta": 0.005,
     "early_stop_min_evals": 8,
-    "early_stop_baseline": "equal_weight",
-    "early_stop_baseline_patience_evals": 6,
+    "early_stop_baseline": None,
+    "early_stop_baseline_patience_evals": 0,
 
     # --- Misc ---
     "seed": 42,
@@ -366,6 +354,7 @@ def build_reward_kwargs_from_config(config: dict) -> dict:
                 "alpha": float(config.get("reward_advanced_alpha", 0.1)),
                 "beta": float(config.get("reward_advanced_beta", 0.5)),
                 "gamma": float(config.get("reward_advanced_gamma", 0.01)),
+                "excess_scale": float(config.get("reward_excess_scale", 80.0)),
             }
         )
 
@@ -906,14 +895,24 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     )
     logger.info(f"Data split: {split.summary()}")
     logger.info(f"Device: {agent.device} | Params: {total_params:,}")
-    logger.info(
-        f"Reward function: {cfg['reward_name']} | "
-        f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']} | "
-        f"sharpe_scale={cfg['reward_sharpe_scale']:.2f} | "
-        f"excess_scale={cfg['reward_excess_scale']:.2f} | "
-        f"drawdown_scale={cfg['reward_drawdown_scale']:.2f} | "
-        f"turnover_scale={cfg['reward_turnover_scale']:.2f}"
-    )
+    if str(cfg["reward_name"]).strip().lower() in {"advanced", "legacy", "advanced_reward"}:
+        logger.info(
+            f"Reward function: {cfg['reward_name']} | "
+            f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']} | "
+            f"excess_scale={cfg['reward_excess_scale']:.2f} | "
+            f"alpha={cfg['reward_advanced_alpha']:.3f} | "
+            f"beta={cfg['reward_advanced_beta']:.3f} | "
+            f"gamma={cfg['reward_advanced_gamma']:.3f}"
+        )
+    else:
+        logger.info(
+            f"Reward function: {cfg['reward_name']} | "
+            f"reward_window={cfg['reward_window']} | reward_scaling={cfg['reward_scaling']} | "
+            f"sharpe_scale={cfg['reward_sharpe_scale']:.2f} | "
+            f"excess_scale={cfg['reward_excess_scale']:.2f} | "
+            f"drawdown_scale={cfg['reward_drawdown_scale']:.2f} | "
+            f"turnover_scale={cfg['reward_turnover_scale']:.2f}"
+        )
     logger.info(
         f"Execution filters: trade_deadband={cfg['trade_deadband']:.3f} | "
         f"max_weight_change_per_step={cfg['max_weight_change_per_step']:.3f}"
@@ -1152,13 +1151,19 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
         if stopped_early:
             break
 
+    final_path = save_dir / "final_model.pt"
+    agent.save(str(final_path))
+    logger.info("Saved final_model.pt from last training weights")
+
     # ----------------------------------------------------------------
     # 6. Final eval on test set (load best model)
     # ----------------------------------------------------------------
     best_path = save_dir / "best_model.pt"
+    final_eval_checkpoint = "final_model"
     if best_path.exists():
         agent.load(str(best_path))
         logger.info("Loaded best_model.pt for final test evaluation")
+        final_eval_checkpoint = "best_model"
     else:
         logger.info("best_model.pt chưa tồn tại, dùng model hiện tại ở cuối training để final eval")
 
@@ -1184,13 +1189,16 @@ def train_ppo(config: dict = None, config_path: str | os.PathLike | None = None)
     # ----------------------------------------------------------------
     # 7. Summary
     # ----------------------------------------------------------------
-    agent.save(str(save_dir / "final_model.pt"))
     logger.save_summary(
         metrics=avg_test,
         extra={
             "data_split": split.summary(),
             "total_episodes": episode_counter,
             "best_val_sharpe": best_val_sharpe,
+            "artifacts": {
+                "final_model_source": "last_training_step",
+                "test_eval_checkpoint": final_eval_checkpoint,
+            },
             "baseline_comparisons": {
                 "val": latest_val_baselines,
                 "test": {
