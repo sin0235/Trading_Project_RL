@@ -46,19 +46,8 @@ fee_rate: 0.001
 max_steps_train: 378
 max_steps_eval: 9999
 
-# ============================================================
-#  REWARD FUNCTION
-#  - excess_scale 80 (tang tu 40): tin hieu excess return manh hon,
-#    agent phan biet ro allocation tot/xau.
-#  - turnover_scale 0.15 (giam tu 0.5): bot phat giao dich,
-#    agent duoc tu do rebalance khi can.
-#    0.5 khien agent SO giao dich -> giu uniform -> giong untrained.
-#  - drawdown_scale 1.5 (giam tu 2.0): bot conservative,
-#    cho phep chap nhan rui ro hop ly de dat return cao hon.
-# ============================================================
 reward_scaling: 1.0
-reward_name: sharpe
-reward_window: 20
+reward_name: advanced
 reward_window: 20
 reward_sharpe_scale: 1.0
 reward_excess_scale: 60.0
@@ -76,26 +65,16 @@ dropout: 0.1
 # Legacy key: giu lai de tuong thich nguoc, model hien tai khong con dung.
 log_std_init: -0.5
 
-# ============================================================
-#  DIRICHLET CONCENTRATION - THAY DOI QUAN TRONG NHAT
-#  128.0 (cu) -> moi alpha_i ~ 7.5 -> variance CUC KY NHO
-#  -> sample gan nhu luon bang mean -> KHONG EXPLORE DUOC
-#  -> policy bi lock vao near-uniform allocation vinh vien.
-#
-#  16.0 (moi) -> moi alpha_i ~ 0.94 -> variance vua du de
-#  explore nhung khong qua noisy. Policy co the hoc duoc
-#  su khac biet giua cac allocation strategy.
-# ============================================================
 dirichlet_total_concentration: 16.0
 
-learning_rate: 0.00025
+learning_rate: 0.0003
 n_steps: 2048
 batch_size: 256
 n_epochs: 12
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
-ent_coef: 0.002
+ent_coef: 0.01
 vf_coef: 0.5
 max_grad_norm: 0.5
 target_kl: 0.03
@@ -106,7 +85,7 @@ target_kl: 0.03
 total_timesteps: 600000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.000025
+min_learning_rate: 0.00003
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:
