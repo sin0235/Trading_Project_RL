@@ -128,8 +128,8 @@ class Advanced1RewardFunction:
         self,
         window: int = 30,
         alpha: float = 0.1,
-        beta: float = 0.5,
-        gamma: float = 0.5,
+        beta: float = 0.8,
+        gamma: float = 0.01,
     ):
         self.window = window
         self.alpha = alpha
@@ -165,21 +165,13 @@ class Advanced1RewardFunction:
         self.max_portfolio_value = max(self.max_portfolio_value, v_new)
         drawdown = (self.max_portfolio_value - v_new) / self.max_portfolio_value
         
-        dd_threshold = 0.10
+        dd_threshold = 0.20
         if drawdown > dd_threshold:
-            drawdown_penalty = drawdown + (drawdown - dd_threshold) ** 2 * 5.0
+            drawdown_penalty = 0.5
         else:
             drawdown_penalty = drawdown
         
-        self.dd_duration = (self.dd_duration + 1) if drawdown > 0.03 else 0
-        duration_penalty = min(self.dd_duration * 0.0005, 0.05)  # cap
 
-        # 3. Recovery bonus
-        recovery_bonus = 0.0
-        if self.prev_drawdown > 0.05:
-            if drawdown < self.prev_drawdown:
-                recovery_bonus = (self.prev_drawdown - drawdown) * 1.5
-        self.prev_drawdown = drawdown
 
         # 4. Turnover penalty
         turnover_penalty = 0.0
@@ -190,9 +182,7 @@ class Advanced1RewardFunction:
         reward = (log_return
                 - self.alpha * vol_penalty
                 - self.beta * drawdown_penalty
-                - duration_penalty
-                - self.gamma * turnover_penalty
-                + recovery_bonus)
+                - self.gamma * turnover_penalty)
 
         # Soft clip thay vì hard clip
         return float(np.tanh(reward * 8) * 0.6)
