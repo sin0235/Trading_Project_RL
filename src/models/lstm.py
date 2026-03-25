@@ -474,7 +474,7 @@ class BranchingDRQNNetwork(nn.Module):
     def __init__(self, n_stocks: int, n_features: int,
                  seq_len: int = 30, hidden_size: int = 128,
                  num_layers: int = 2, dropout: float = 0.1,
-                 k: int = 3):
+                 k: int = 3, max_positions: int = 3):
         super().__init__()
 
         self.n_stocks = n_stocks
@@ -482,7 +482,7 @@ class BranchingDRQNNetwork(nn.Module):
         self.seq_len = seq_len
         self.hidden_size = hidden_size
         self.k = k
-
+        self.max_positions = max_positions
         input_size = n_stocks * n_features
         portfolio_dim = 1 + n_stocks
         combined_dim = hidden_size + portfolio_dim
@@ -496,23 +496,27 @@ class BranchingDRQNNetwork(nn.Module):
         self.shared_fc = nn.Sequential(
             nn.Linear(combined_dim, hidden_size),
             nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
             nn.Dropout(dropout),
         )
         self.value_stream = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),  # thêm 1 layer
+            nn.ReLU(),
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Linear(hidden_size // 2, 1),
         )
-        self.advantage_streams = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(hidden_size, hidden_size // 2),
-                    nn.ReLU(),
-                    nn.Linear(hidden_size // 2, self.k),
-                )
-                for _ in range(self.n_stocks)
-            ]
-        )
+        self.advantage_streams = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),  # shallow hơn
+                nn.ReLU(),
+                nn.Linear(hidden_size // 2, self.k),
+            )
+            for _ in range(self.n_stocks)
+        ])
 
         _init_sequential(self.shared_fc, output_gain=np.sqrt(2))
         _init_sequential(self.value_stream, output_gain=1.0)
@@ -560,8 +564,23 @@ class BranchingDRQNNetwork(nn.Module):
 
         with torch.no_grad():
             q_values, new_hidden = self.forward(market_state, portfolio_state, hidden)
-            action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
+            # action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
+            action = self.select_action_constrained(q_values, portfolio_state, self.max_positions).squeeze(0).cpu().numpy().astype(np.int64)
         return action, new_hidden
+    def select_action_constrained(self, q_values, portfolio_state, max_positions=3):
+        raw_action = q_values.argmax(dim=-1).squeeze(0)
+        
+        # Nếu số lệnh mua vượt ngưỡng → chỉ giữ top-k theo Q-value
+        buy_mask = (raw_action == 2)  # action 2 = buy
+        if buy_mask.sum() > max_positions:
+            buy_q = q_values.squeeze(0)[:, 2]  # Q-value của action buy
+            buy_q[~buy_mask] = -torch.inf
+            _, top_k = buy_q.topk(max_positions)
+            constrained = raw_action.clone()
+            constrained[buy_mask] = 1  # reset về hold
+            constrained[top_k] = 2    # chỉ mua top-k
+            return constrained
+        return raw_action
 
 
 # ============================================================
