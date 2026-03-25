@@ -459,7 +459,7 @@ else:
     )
     out = out.replace(
         "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>DDQ tốt nhất</span>' : ''}<span><i style=\"background:#ffd166\"></i>Danh mục đều</span><span><i style=\"background:#73b6ff\"></i>Mua và giữ</span>",
-        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Branching DDQ</span>' : ''}",
+        "${ddqCompare ? `<span><i style=\"background:#e2e8f0\"></i>${esc((ddqCompare && ddqCompare.label) || 'DDQ')}</span>` : ''}",
     )
     out = out.replace(
         '<polyline points="${esc(slicePts(selected.chart && selected.chart.buy_hold_points, state.frame))}" fill="none" stroke="#73b6ff" stroke-width="3"></polyline><polyline points="${esc(slicePts(selected.chart && selected.chart.equal_weight_points, state.frame))}" fill="none" stroke="#ffd166" stroke-width="3"></polyline>',
@@ -483,7 +483,19 @@ else:
     )
     out = out.replace(
         "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Policy cố định</span>' : ''}<span><i style=\"background:#73b6ff\"></i>Mua và giữ</span>",
-        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Policy cố định</span>' : ''}",
+        "${ddqCompare ? `<span><i style=\"background:#e2e8f0\"></i>${esc((ddqCompare && ddqCompare.label) || 'Policy cố định')}</span>` : ''}",
+    )
+    out = out.replace(
+        '<span>Policy cố định</span><strong class="${cls((ddqCompare.summary || {}).final_return_pct || 0)}">${pct((ddqCompare.summary || {}).final_return_pct, 2)}</strong></div><div class="cmp"><span>Chênh cuối kỳ vs policy cố định</span>',
+        '<span>${esc((ddqCompare && ddqCompare.label) || \'Policy cố định\')}</span><strong class="${cls((ddqCompare.summary || {}).final_return_pct || 0)}">${pct((ddqCompare.summary || {}).final_return_pct, 2)}</strong></div><div class="cmp"><span>Chênh cuối kỳ vs ${esc((ddqCompare && ddqCompare.label) || \'policy cố định\')}</span>',
+    )
+    out = out.replace(
+        "${ddqCompare ? '<span><i style=\"background:#e2e8f0\"></i>Sharpe của policy cố định</span>' : ''}",
+        "${ddqCompare ? `<span><i style=\"background:#e2e8f0\"></i>Sharpe của ${esc((ddqCompare && ddqCompare.label) || 'policy cố định')}</span>` : ''}",
+    )
+    out = out.replace(
+        '<div class="cmp"><span>Sharpe policy cố định</span><strong class="${cls(ddqRisk.sharpe_ratio || 0)}">${num(ddqRisk.sharpe_ratio, 2)}</strong></div><div class="cmp"><span>Max DD policy cố định</span>',
+        '<div class="cmp"><span>Sharpe ${esc((ddqCompare && ddqCompare.label) || \'policy cố định\')}</span><strong class="${cls(ddqRisk.sharpe_ratio || 0)}">${num(ddqRisk.sharpe_ratio, 2)}</strong></div><div class="cmp"><span>Max DD ${esc((ddqCompare && ddqCompare.label) || \'policy cố định\')}</span>',
     )
     out = out.replace(
         '<polyline points="${esc(seriesPoints(selected.chart && selected.chart.buy_hold_drawdown_series, state.frame, drawdownRange.min, drawdownRange.max, 620, 180, 14))}" fill="none" stroke="#73b6ff" stroke-width="2.6"></polyline>',

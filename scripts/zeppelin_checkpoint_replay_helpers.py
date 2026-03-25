@@ -43,6 +43,7 @@ from scripts.dashboard_paths import (
     REPLAY_RUN_LIMIT_DEFAULT,
     REPLAY_VNSTOCK_SOURCE_DEFAULT,
     REPLAY_WARMUP_MONTHS_DEFAULT,
+    compare_label_for_path,
 )
 MIN_COMMON_REPLAY_DAYS = 10
 FALLBACK_CACHE_SOURCE = "fallback-cache"
@@ -579,6 +580,7 @@ def _load_ddq_compare_config(
     checkpoint_path: Path,
     base_config: dict[str, Any],
 ) -> tuple[dict[str, Any], str, str, str]:
+    compare_label = compare_label_for_path(checkpoint_path)
     compare_agent = _detect_compare_artifact_agent(project_root, checkpoint_path).upper()
     candidate_roots = _compare_artifact_roots_for_checkpoint(project_root, checkpoint_path)
 
@@ -591,7 +593,7 @@ def _load_ddq_compare_config(
                         load_ddq_run_config(cfg_path.parent, overrides={"device": "cpu"}),
                         "ddq_config_json",
                         "ddq",
-                        DDQ_COMPARE_LABEL,
+                        compare_label,
                     )
                 except Exception:
                     pass
@@ -603,7 +605,7 @@ def _load_ddq_compare_config(
                 try:
                     raw_cfg = _load_json_mapping(cfg_path)
                     cfg = resolve_ddq_config(config={**base_config, **raw_cfg, "device": "cpu"})
-                    return cfg, candidate_name, "ddq", DDQ_COMPARE_LABEL
+                    return cfg, candidate_name, "ddq", compare_label
                 except Exception:
                     continue
 
@@ -612,7 +614,7 @@ def _load_ddq_compare_config(
             base_config={**base_config, "device": "cpu"},
             overrides={"device": "cpu"},
         )
-        return cfg, "checkpoint_inferred", "ddq", DDQ_COMPARE_LABEL
+        return cfg, "checkpoint_inferred", "ddq", compare_label
 
     for root in candidate_roots:
         cfg_path = root / "config.json"

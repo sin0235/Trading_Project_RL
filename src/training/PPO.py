@@ -106,6 +106,11 @@ DEFAULT_CONFIG = {
     "save_freq": 5,
     "milestone_checkpoint_steps": [100_000, 300_000, 500_000],
     "n_eval_episodes": 3,
+    "early_stop_patience_evals": 10,
+    "early_stop_min_delta": 0.005,
+    "early_stop_min_evals": 8,
+    "early_stop_baseline": "equal_weight",
+    "early_stop_baseline_patience_evals": 6,
 
     # --- Misc ---
     "seed": 42,
