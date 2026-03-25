@@ -14,7 +14,7 @@ class AdvancedRewardFunction:
         window: int = 30,
         alpha: float = 0.1,  # Trọng số cho Volatility (Rủi ro)
         beta: float = 0.5,   # Trọng số cho Max Drawdown (Sụt giảm)
-        gamma: float = 0.1  # Trọng số cho Transaction Penalty (Chi phí)
+        gamma: float = 0.5  # Trọng số cho Transaction Penalty (Chi phí)
     ):
         self.window = window
         self.alpha = alpha
