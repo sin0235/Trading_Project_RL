@@ -48,13 +48,16 @@ max_steps_eval: 9999
 
 reward_scaling: 1.0
 reward_name: advanced
-reward_window: 20
+reward_window: 30
 reward_sharpe_scale: 1.0
-reward_excess_scale: 60.0
+reward_excess_scale: 80.0
 reward_drawdown_scale: 2.0
 reward_turnover_scale: 0.3
-trade_deadband: 0.015
-max_weight_change_per_step: 0.12
+reward_advanced_alpha: 0.08
+reward_advanced_beta: 1.25
+reward_advanced_gamma: 0.08
+trade_deadband: 0.005
+max_weight_change_per_step: 0.35
 
 # ============================================================
 #  MODEL (LSTM)
@@ -65,33 +68,34 @@ dropout: 0.1
 # Legacy key: giu lai de tuong thich nguoc, model hien tai khong con dung.
 log_std_init: -0.5
 
-dirichlet_total_concentration: 16.0
+dirichlet_total_concentration: 6.0
 
-learning_rate: 0.0003
-n_steps: 2048
-batch_size: 256
-n_epochs: 12
+learning_rate: 0.0008
+n_steps: 1024
+batch_size: 128
+n_epochs: 20
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.2
-ent_coef: 0.01
-vf_coef: 0.5
+clip_range: 0.28
+ent_coef: 0.001
+vf_coef: 0.35
 max_grad_norm: 0.5
-target_kl: 0.03
+target_kl: 0.08
 
 # ============================================================
 #  TRAINING SCHEDULE
 # ============================================================
-total_timesteps: 600000
+total_timesteps: 900000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.00003
+min_learning_rate: 0.00008
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:
-  - 100000
+  - 150000
   - 300000
-  - 500000
+  - 600000
+  - 900000
 n_eval_episodes: 3
 # Tat early stopping dua tren ket qua val.
 early_stop_patience_evals: 0
