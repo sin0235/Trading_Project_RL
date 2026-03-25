@@ -57,6 +57,9 @@ DEFAULT_CONFIG = {
     "reward_scaling": 1.0,
     "reward_name": "advanced",
     "reward_window": 30,
+    "reward_alpha": 0.1,
+    "reward_beta": 0.5,
+    "reward_gamma": 0.1,
 
     "hidden_size": 128,
     "num_layers": 2,
@@ -77,7 +80,7 @@ DEFAULT_CONFIG = {
     "epsilon_end": 0.05,
     "epsilon_decay_steps": 200_000,
 
-    "total_timesteps": 500_000,
+    "total_timesteps": 50000,
     "lr_schedule": "cosine",
     "min_learning_rate": 1e-5,
     "train_metrics_log_every": 200,
@@ -456,6 +459,9 @@ def resolve_ddq_config(
         "epsilon_start",
         "epsilon_end",
         "reward_scaling",
+        "reward_alpha",
+        "reward_beta",
+        "reward_gamma",
         "fee_rate",
         "dropout",
         "train_ratio",
@@ -587,7 +593,12 @@ def make_env(tickers, data_dict, config, for_eval=False):
         random_start=not for_eval,
         reward_scaling=config["reward_scaling"],
         reward_name=config["reward_name"],
-        reward_kwargs={"window": config["reward_window"]},
+        reward_kwargs={
+            "window": config["reward_window"],
+            "alpha": config["reward_alpha"],
+            "beta": config["reward_beta"],
+            "gamma": config["reward_gamma"]
+        },
         print_verbosity=999999,
     )
 
@@ -681,6 +692,7 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
     train_env = make_env(cfg["tickers"], split.train, cfg, for_eval=False)
     val_env = make_env(cfg["tickers"], split.val, cfg, for_eval=True)
     test_env = make_env(cfg["tickers"], split.test, cfg, for_eval=True)
+    print(f"Config {cfg}  train_env:{train_env.reward_kwargs}")
 
     state_space = train_env.state_space
     n_stocks = state_space.n_stocks
@@ -937,6 +949,9 @@ def evaluate_branchingddq(
         test_ratio=eval_cfg["test_ratio"],
     )
     test_env = make_env(eval_cfg["tickers"], split.test, eval_cfg, for_eval=True)
+    val_env = make_env(eval_cfg["tickers"], split.val, eval_cfg, for_eval=True)
+    train_env = make_env(eval_cfg["tickers"], split.train, eval_cfg, for_eval=True)
+    test_env = train_env
     state_space = test_env.state_space
 
     model = BranchingDRQNNetwork(
