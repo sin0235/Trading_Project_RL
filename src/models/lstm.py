@@ -323,6 +323,140 @@ class DRQNNetwork(nn.Module):
             return action, new_hidden
 
 
+class BranchingDRQNNetwork(nn.Module):
+    """
+    Branching Dueling DRQN cho Multi-Discrete Action Space.
+
+    Mỗi stock = 1 branch riêng:
+        → mỗi branch có k actions (sell/hold/buy)
+
+    Q(s,a) = V(s) + A_i(s,a_i) - mean(A_i)
+
+    Tổng action space không còn là k * n_stocks (flat),
+    mà là n_stocks nhánh độc lập.
+    """
+
+    def __init__(self, n_stocks: int, n_features: int,
+                 seq_len: int = 30, hidden_size: int = 128,
+                 num_layers: int = 2, dropout: float = 0.1,
+                 k: int = 3):
+
+        super().__init__()
+
+        self.n_stocks = n_stocks
+        self.n_features = n_features
+        self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        self.k = k  # số action mỗi stock
+
+        input_size = n_stocks * n_features
+        portfolio_dim = 1 + n_stocks
+        combined_dim = hidden_size + portfolio_dim
+
+        # ===== LSTM =====
+        self.feature_extractor = LSTMFeatureExtractor(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+
+        # ===== Shared =====
+        self.shared_fc = nn.Sequential(
+            nn.Linear(combined_dim, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+
+        # ===== Value =====
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1),
+        )
+
+        # ===== Branching Advantage =====
+        self.advantage_streams = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_size // 2, k)
+            )
+            for _ in range(n_stocks)
+        ])
+
+        _init_sequential(self.shared_fc, output_gain=np.sqrt(2))
+        _init_sequential(self.value_stream, output_gain=1.0)
+        for adv in self.advantage_streams:
+            _init_sequential(adv, output_gain=0.01)
+
+    def forward(self, market_state, portfolio_state, hidden=None):
+        """
+        Returns:
+            q_values: (batch, n_stocks, k)
+        """
+
+        if market_state.dim() == 4:
+            b, t, s, f = market_state.shape
+            market_state = market_state.reshape(b, t, s * f)
+
+        lstm_features, new_hidden = self.feature_extractor(
+            market_state, hidden
+        )
+
+        combined = torch.cat([lstm_features, portfolio_state], dim=-1)
+        shared_out = self.shared_fc(combined)
+
+        # Value
+        value = self.value_stream(shared_out)  # (batch, 1)
+
+        # Advantage per branch
+        advantages = []
+        for adv_head in self.advantage_streams:
+            adv = adv_head(shared_out)  # (batch, k)
+            advantages.append(adv)
+
+        # stack → (batch, n_stocks, k)
+        advantages = torch.stack(advantages, dim=1)
+
+        # normalize advantage
+        adv_mean = advantages.mean(dim=-1, keepdim=True)
+
+        q_values = value.unsqueeze(1) + advantages - adv_mean
+
+        return q_values, new_hidden
+
+    def init_hidden(self, batch_size, device=None):
+        return self.feature_extractor.init_hidden(batch_size, device)
+
+    def select_action(self, market_state, portfolio_state,
+                      hidden, epsilon=0.0):
+        """
+        Returns:
+            actions: (n_stocks,) mỗi stock 1 action
+        """
+
+        if np.random.random() < epsilon:
+            actions = np.random.randint(0, self.k, size=self.n_stocks)
+
+            with torch.no_grad():
+                _, new_hidden = self.forward(
+                    market_state, portfolio_state, hidden
+                )
+
+            return actions, new_hidden
+
+        else:
+            with torch.no_grad():
+                q_values, new_hidden = self.forward(
+                    market_state, portfolio_state, hidden
+                )
+
+                # (1, n_stocks, k) → (n_stocks,)
+                actions = q_values.argmax(dim=-1).squeeze(0).cpu().numpy()
+
+            return actions, new_hidden
+
 # ============================================================
 #  Branching DRQN cho vector action per-stock
 # ============================================================
