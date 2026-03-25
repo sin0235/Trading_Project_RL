@@ -56,8 +56,10 @@ reward_turnover_scale: 0.3
 reward_advanced_alpha: 0.08
 reward_advanced_beta: 1.25
 reward_advanced_gamma: 0.08
-trade_deadband: 0.005
-max_weight_change_per_step: 0.35
+# Mo deadband de policy khong bi "im" vi chenh lech nho.
+trade_deadband: 0.001
+# Cho phep doi ty trong manh hon trong 1 step thay vi bi cat qua sat.
+max_weight_change_per_step: 0.75
 
 # ============================================================
 #  MODEL (LSTM)
@@ -68,19 +70,20 @@ dropout: 0.1
 # Legacy key: giu lai de tuong thich nguoc, model hien tai khong con dung.
 log_std_init: -0.5
 
-dirichlet_total_concentration: 6.0
+# 0.0 = free concentration mode, policy duoc phep lech xa prior dong deu.
+dirichlet_total_concentration: 0.0
 
-learning_rate: 0.0008
-n_steps: 1024
+learning_rate: 0.001
+n_steps: 1536
 batch_size: 128
-n_epochs: 20
+n_epochs: 24
 gamma: 0.99
 gae_lambda: 0.95
-clip_range: 0.28
-ent_coef: 0.001
-vf_coef: 0.35
-max_grad_norm: 0.5
-target_kl: 0.08
+clip_range: 0.35
+ent_coef: 0.0003
+vf_coef: 0.25
+max_grad_norm: 1.0
+target_kl: 0.18
 
 # ============================================================
 #  TRAINING SCHEDULE
@@ -88,7 +91,7 @@ target_kl: 0.08
 total_timesteps: 900000
 lr_decay: true
 lr_schedule: cosine
-min_learning_rate: 0.00008
+min_learning_rate: 0.0001
 eval_freq: 5
 save_freq: 5
 milestone_checkpoint_steps:

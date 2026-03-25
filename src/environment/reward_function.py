@@ -122,6 +122,82 @@ class AdvancedRewardFunction:
 
             return float(np.clip(reward, -5.0, 5.0))
 
+
+class Advanced1RewardFunction:
+    def __init__(
+        self,
+        window: int = 30,
+        alpha: float = 0.1,
+        beta: float = 0.5,
+        gamma: float = 0.5,
+    ):
+        self.window = window
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+
+        self.returns_history = deque(maxlen=window)
+        self.max_portfolio_value = -np.inf
+        self.dd_duration = 0
+        self.prev_drawdown = 0.0
+
+    def reset(self):
+        self.returns_history.clear()
+        self.max_portfolio_value = -np.inf
+        self.dd_duration = 0
+        self.prev_drawdown = 0.0
+
+    def calculate(self, v_old, v_new, trade_amounts=None, prices=None):
+        if v_old <= 0 or v_new <= 0:
+            return -2.0
+
+        log_return = float(np.log(v_new / v_old))
+        self.returns_history.append(log_return)
+
+        # 1. Downside volatility thay vì std toàn phần
+        vol_penalty = 0.0
+        if len(self.returns_history) >= 2:
+            arr = np.array(self.returns_history)
+            downside = arr[arr < 0]
+            vol_penalty = float(np.std(downside)) if len(downside) >= 2 else 0.0
+
+        # 2. Phi tuyến drawdown + duration penalty
+        self.max_portfolio_value = max(self.max_portfolio_value, v_new)
+        drawdown = (self.max_portfolio_value - v_new) / self.max_portfolio_value
+        
+        dd_threshold = 0.10
+        if drawdown > dd_threshold:
+            drawdown_penalty = drawdown + (drawdown - dd_threshold) ** 2 * 5.0
+        else:
+            drawdown_penalty = drawdown
+        
+        self.dd_duration = (self.dd_duration + 1) if drawdown > 0.03 else 0
+        duration_penalty = min(self.dd_duration * 0.0005, 0.05)  # cap
+
+        # 3. Recovery bonus
+        recovery_bonus = 0.0
+        if self.prev_drawdown > 0.05:
+            if drawdown < self.prev_drawdown:
+                recovery_bonus = (self.prev_drawdown - drawdown) * 1.5
+        self.prev_drawdown = drawdown
+
+        # 4. Turnover penalty
+        turnover_penalty = 0.0
+        if trade_amounts is not None and prices is not None:
+            trade_value = np.sum(np.abs(trade_amounts) * prices)
+            turnover_penalty = float(trade_value / v_old)
+
+        reward = (log_return
+                - self.alpha * vol_penalty
+                - self.beta * drawdown_penalty
+                - duration_penalty
+                - self.gamma * turnover_penalty
+                + recovery_bonus)
+
+        # Soft clip thay vì hard clip
+        return float(np.tanh(reward * 8) * 0.6)
+
+
 class SharpeRewardFunction:
     """
     Reward dua tren rolling Sharpe ratio cua excess return.
@@ -412,4 +488,6 @@ def build_reward_function(name: str = "sharpe", **kwargs):
         return SharpePlusRewardFunction(**kwargs)
     if normalized in {"advanced", "legacy", "advanced_reward"}:
         return AdvancedRewardFunction(**kwargs)
+    if normalized in {"advanced1", "advanced_v1", "advanced1_reward"}:
+        return Advanced1RewardFunction(**kwargs)
     raise ValueError(f"Unsupported reward function: {name}")
