@@ -16,7 +16,7 @@ REPLAY_CHECKPOINT_SAMPLES_DEFAULT = 6
 REPLAY_VNSTOCK_SOURCE_DEFAULT = "VCI"
 REPLAY_END_DATE_DEFAULT = "2026-02-25"
 REPLAY_MAX_FRAMES_DEFAULT = 420
-REPLAY_PAYLOAD_SCHEMA_VERSION = 2
+REPLAY_PAYLOAD_SCHEMA_VERSION = 3
 
 # Compare artifacts cho đường policy cố định trên dashboard.
 # Ưu tiên DDQ mới, fallback sang Branching DDQ cũ nếu không có.
