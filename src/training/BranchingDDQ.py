@@ -748,6 +748,7 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
     save_dir.mkdir(parents=True, exist_ok=True)
 
     obs, _ = train_env.reset(seed=cfg["seed"])
+    agent.reset_hidden()                          # FIX #1a
     episode_reward = 0.0
     episode_counter = 0
     best_val_sharpe = -np.inf
@@ -812,10 +813,12 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
             )
             episode_reward = 0.0
             obs, _ = train_env.reset()
+            agent.reset_hidden()
         else:
             obs = next_obs
 
         if step % cfg["eval_freq"] == 0:
+            agent.reset_hidden()  
             val_values = agent.evaluate(val_env, val_env.state_space, cfg["n_eval_episodes"])
             val_metrics_list = [compute_all(pv, cfg["initial_balance"]) for pv in val_values]
             avg_val_metrics = average_metrics(val_metrics_list)
@@ -843,6 +846,8 @@ def train_branchingddq(config: dict | None = None, config_path: str | os.PathLik
         logger.info("Loaded best_model.pt for final test evaluation")
     else:
         logger.info("best_model.pt chưa tồn tại, dùng model hiện tại cho final eval")
+        
+    agent.reset_hidden()
 
     test_values = agent.evaluate(
         test_env,
