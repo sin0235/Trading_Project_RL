@@ -457,7 +457,7 @@ class BranchingDRQNNetwork(nn.Module):
 
             return actions, new_hidden
 
-class BranchingDRQNNetwork1(nn.Module):
+class BranchingDRQNNetwork(nn.Module):
     """
     Branching Dueling DRQN cho Multi-Discrete Action Space.
 
@@ -587,16 +587,30 @@ class BranchingDRQNNetwork1(nn.Module):
                 )
 
                 # (1, n_stocks, k) → (n_stocks,)
-                actions = q_values.argmax(dim=-1).squeeze(0).cpu().numpy()
-
-            return actions, new_hidden
+                # action = self.select_action_constrained(q_values, portfolio_state, 3).squeeze(0).cpu().numpy().astype(np.int64)
+                action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
+        return action, new_hidden
+    def select_action_constrained(self, q_values, portfolio_state, max_positions=5):
+        raw_action = q_values.argmax(dim=-1).squeeze(0)
+        
+        # Nếu số lệnh mua vượt ngưỡng → chỉ giữ top-k theo Q-value
+        buy_mask = (raw_action == 2)  # action 2 = buy
+        if buy_mask.sum() > max_positions:
+            buy_q = q_values.squeeze(0)[:, 2]  # Q-value của action buy
+            buy_q[~buy_mask] = -torch.inf
+            _, top_k = buy_q.topk(max_positions)
+            constrained = raw_action.clone()
+            constrained[buy_mask] = 1  # reset về hold
+            constrained[top_k] = 2    # chỉ mua top-k
+            return constrained
+        return raw_action
 
 # ============================================================
 #  Branching DRQN cho vector action per-stock
 # ============================================================
 
 
-class BranchingDRQNNetwork(nn.Module):
+class BranchingDRQNNetwork1(nn.Module):
     """
     Branching Dueling DRQN.
 
@@ -698,23 +712,23 @@ class BranchingDRQNNetwork(nn.Module):
 
         with torch.no_grad():
             q_values, new_hidden = self.forward(market_state, portfolio_state, hidden)
-            # action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
-            action = self.select_action_constrained(q_values, portfolio_state, self.max_positions).squeeze(0).cpu().numpy().astype(np.int64)
+            action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
+            # action = self.select_action_constrained(q_values, portfolio_state, self.max_positions).squeeze(0).cpu().numpy().astype(np.int64)
         return action, new_hidden
-    def select_action_constrained(self, q_values, portfolio_state, max_positions=3):
-        raw_action = q_values.argmax(dim=-1).squeeze(0)
+    # def select_action_constrained(self, q_values, portfolio_state, max_positions=3):
+    #     raw_action = q_values.argmax(dim=-1).squeeze(0)
         
-        # Nếu số lệnh mua vượt ngưỡng → chỉ giữ top-k theo Q-value
-        buy_mask = (raw_action == 2)  # action 2 = buy
-        if buy_mask.sum() > max_positions:
-            buy_q = q_values.squeeze(0)[:, 2]  # Q-value của action buy
-            buy_q[~buy_mask] = -torch.inf
-            _, top_k = buy_q.topk(max_positions)
-            constrained = raw_action.clone()
-            constrained[buy_mask] = 1  # reset về hold
-            constrained[top_k] = 2    # chỉ mua top-k
-            return constrained
-        return raw_action
+    #     # Nếu số lệnh mua vượt ngưỡng → chỉ giữ top-k theo Q-value
+    #     buy_mask = (raw_action == 2)  # action 2 = buy
+    #     if buy_mask.sum() > max_positions:
+    #         buy_q = q_values.squeeze(0)[:, 2]  # Q-value của action buy
+    #         buy_q[~buy_mask] = -torch.inf
+    #         _, top_k = buy_q.topk(max_positions)
+    #         constrained = raw_action.clone()
+    #         constrained[buy_mask] = 1  # reset về hold
+    #         constrained[top_k] = 2    # chỉ mua top-k
+    #         return constrained
+    #     return raw_action
 
 
 # ============================================================
