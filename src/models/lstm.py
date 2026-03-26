@@ -457,7 +457,7 @@ class BranchingDRQNNetwork1(nn.Module):
 
             return actions, new_hidden
 
-class BranchingDRQNNetwork(nn.Module):
+class BranchingDRQNNetwork1(nn.Module):
     """
     Branching Dueling DRQN cho Multi-Discrete Action Space.
 
@@ -698,8 +698,8 @@ class BranchingDRQNNetwork(nn.Module):
 
         with torch.no_grad():
             q_values, new_hidden = self.forward(market_state, portfolio_state, hidden)
-            # action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
-            action = self.select_action_constrained(q_values, portfolio_state, self.max_positions).squeeze(0).cpu().numpy().astype(np.int64)
+            action = q_values.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.int64)
+            # action = self.select_action_constrained(q_values, portfolio_state, self.max_positions).squeeze(0).cpu().numpy().astype(np.int64)
         return action, new_hidden
     def select_action_constrained(self, q_values, portfolio_state, max_positions=3):
         raw_action = q_values.argmax(dim=-1).squeeze(0)
