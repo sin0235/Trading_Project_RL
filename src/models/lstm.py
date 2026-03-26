@@ -323,7 +323,7 @@ class DRQNNetwork(nn.Module):
             return action, new_hidden
 
 
-class BranchingDRQNNetwork(nn.Module):
+class BranchingDRQNNetwork1(nn.Module):
     """
     Branching Dueling DRQN cho Multi-Discrete Action Space.
 
@@ -457,7 +457,7 @@ class BranchingDRQNNetwork(nn.Module):
 
             return actions, new_hidden
 
-class BranchingDRQNNetwork1(nn.Module):
+class BranchingDRQNNetwork(nn.Module):
     """
     Branching Dueling DRQN cho Multi-Discrete Action Space.
 
