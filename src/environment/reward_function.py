@@ -167,7 +167,7 @@ class Advanced1RewardFunction:
         
         dd_threshold = 0.20
         if drawdown > dd_threshold:
-            drawdown_penalty = 0.5
+            drawdown_penalty = 1
         else:
             drawdown_penalty = drawdown
         
