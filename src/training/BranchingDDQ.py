@@ -25,7 +25,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.agents.branchingddn_agent import BranchingDDQAgent
-from src.constants import DATA_PATH, FEATURES, TICKERS, WINDOW_SIZE
+from src.constants import DATA_PATH, FEATURES, TICKERS, WINDOW_SIZE, FEATURES_EXTENDED
 from src.environment.trading_env import TradingEnv
 from src.models.lstm import BranchingDRQNNetwork
 from src.training.PPO import (
@@ -43,7 +43,7 @@ from src.utils.metrics import compute_all, format_report
 
 DEFAULT_CONFIG = {
     "tickers": TICKERS,
-    "features": FEATURES,
+    "features": FEATURES_EXTENDED,
     "window_size": WINDOW_SIZE,
     "data_path": DATA_PATH,
     "train_ratio": 0.7,
@@ -951,7 +951,7 @@ def evaluate_branchingddq(
     test_env = make_env(eval_cfg["tickers"], split.test, eval_cfg, for_eval=True)
     val_env = make_env(eval_cfg["tickers"], split.val, eval_cfg, for_eval=True)
     train_env = make_env(eval_cfg["tickers"], split.train, eval_cfg, for_eval=True)
-    # test_env = train_env
+    test_env = val_env
     state_space = test_env.state_space
 
     model = BranchingDRQNNetwork(
