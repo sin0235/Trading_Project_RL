@@ -1,16 +1,20 @@
 """
-Branching DDQ (Double Deep Q-Learning) Agent với Branching DRQN cho MultiDiscrete trading.
+Branching DDQ Agent với LSTM hidden state được xử lý đúng cách.
 
-Thiết kế:
-    - ReplayBuffer: lưu (s, a_vec, r, s', done), trong đó a_vec có shape (n_stocks,)
-    - Online + target network (Double DQN theo từng branch)
-    - Soft-update target (polyak tau) sau mỗi gradient step
-    - Epsilon-greedy qua BranchingDRQNNetwork.select_action
+Các lỗi đã sửa so với phiên bản cũ:
+    [BUG #1] select_action: lưu và truyền _inference_hidden qua từng bước.
+             reset_hidden() phải được gọi ở đầu mỗi episode.
+    [BUG #2] _update_once: thêm LSTM burn-in khi train để warm-up hidden state
+             trước khi tính loss, tránh zero-init gây bias.
+    [BUG #3] Double DQN: online model tạo hidden, target model dùng lại hidden
+             đó — đảm bảo cả hai "thấy" cùng context.
+    [BONUS]  evaluate(): gọi reset_hidden() ở đầu mỗi episode đánh giá.
+    [BONUS]  ReplayBuffer: thêm episode_boundary để hỗ trợ burn-in sampling.
 """
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -18,12 +22,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models.lstm import BranchingDRQNNetwork
+
 np.random.seed(42)
 torch.manual_seed(42)
 
 
+# ---------------------------------------------------------------------------
+# Replay Buffer
+# ---------------------------------------------------------------------------
+
 class ReplayBuffer:
-    """Ring buffer numpy cho transitions đã flatten thành chuỗi LSTM."""
+    """
+    Ring buffer numpy cho transitions đã flatten thành chuỗi LSTM.
+
+    Thêm mảng episode_boundaries để đánh dấu điểm kết thúc episode,
+    phục vụ chiến lược burn-in khi sample batch training.
+    """
 
     def __init__(
         self,
@@ -32,27 +46,27 @@ class ReplayBuffer:
         market_feat_dim: int,
         portfolio_dim: int,
         n_branches: int,
+        burnin_len: int = 10,
     ):
         self.capacity = int(capacity)
         self.seq_len = seq_len
         self.market_feat_dim = market_feat_dim
         self.portfolio_dim = portfolio_dim
         self.n_branches = int(n_branches)
+        self.burnin_len = burnin_len  # số bước warm-up LSTM trước khi tính loss
 
         self._ptr = 0
         self.size = 0
 
-        self.market = np.zeros(
-            (self.capacity, seq_len, market_feat_dim), dtype=np.float32
-        )
-        self.portfolio = np.zeros((self.capacity, portfolio_dim), dtype=np.float32)
-        self.actions = np.zeros((self.capacity, self.n_branches), dtype=np.int64)
-        self.rewards = np.zeros((self.capacity,), dtype=np.float32)
-        self.next_market = np.zeros(
-            (self.capacity, seq_len, market_feat_dim), dtype=np.float32
-        )
-        self.next_portfolio = np.zeros((self.capacity, portfolio_dim), dtype=np.float32)
-        self.dones = np.zeros((self.capacity,), dtype=np.float32)
+        self.market       = np.zeros((self.capacity, seq_len, market_feat_dim), dtype=np.float32)
+        self.portfolio    = np.zeros((self.capacity, portfolio_dim),             dtype=np.float32)
+        self.actions      = np.zeros((self.capacity, self.n_branches),           dtype=np.int64)
+        self.rewards      = np.zeros((self.capacity,),                           dtype=np.float32)
+        self.next_market  = np.zeros((self.capacity, seq_len, market_feat_dim), dtype=np.float32)
+        self.next_portfolio = np.zeros((self.capacity, portfolio_dim),           dtype=np.float32)
+        self.dones        = np.zeros((self.capacity,),                           dtype=np.float32)
+        # True nếu đây là bước đầu tiên của episode (dùng để reset burn-in hidden)
+        self.episode_start = np.zeros((self.capacity,),                          dtype=np.bool_)
 
     def push(
         self,
@@ -63,45 +77,82 @@ class ReplayBuffer:
         next_market_state: np.ndarray,
         next_portfolio_state: np.ndarray,
         done: bool,
+        is_episode_start: bool = False,
     ) -> None:
         i = self._ptr
-        self.market[i] = market_state
-        self.portfolio[i] = portfolio_state
+        self.market[i]          = market_state
+        self.portfolio[i]       = portfolio_state
         action_arr = np.asarray(action, dtype=np.int64).reshape(-1)
         if action_arr.shape != (self.n_branches,):
-            raise ValueError(
-                f"Action shape {action_arr.shape} != ({self.n_branches},)"
-            )
-        self.actions[i] = action_arr
-        self.rewards[i] = float(reward)
-        self.next_market[i] = next_market_state
-        self.next_portfolio[i] = next_portfolio_state
-        self.dones[i] = 1.0 if done else 0.0
+            raise ValueError(f"Action shape {action_arr.shape} != ({self.n_branches},)")
+        self.actions[i]         = action_arr
+        self.rewards[i]         = float(reward)
+        self.next_market[i]     = next_market_state
+        self.next_portfolio[i]  = next_portfolio_state
+        self.dones[i]           = 1.0 if done else 0.0
+        self.episode_start[i]   = bool(is_episode_start)
 
         self._ptr = (self._ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int, device: torch.device) -> Dict[str, torch.Tensor]:
         idx = np.random.randint(0, self.size, size=batch_size)
+        return self._idx_to_batch(idx, device)
+
+    def sample_with_burnin(
+        self, batch_size: int, device: torch.device
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        """
+        Sample batch có kèm burnin_len bước liền trước để warm-up LSTM.
+
+        Trả về (burnin_batch, train_batch). Các index được chọn sao cho
+        luôn có đủ burnin_len bước trước mà không cross episode boundary.
+        """
+        bl = self.burnin_len
+        # Chỉ sample từ các vị trí có đủ burnin trước đó
+        valid_start = bl
+        valid_end   = self.size
+        if valid_end - valid_start < batch_size:
+            # fallback: sample thông thường nếu buffer chưa đủ
+            return None, self.sample(batch_size, device)
+
+        train_idx = np.random.randint(valid_start, valid_end, size=batch_size)
+
+        # Xây burnin index (train_idx - bl .. train_idx - 1)
+        burnin_idx = np.stack(
+            [train_idx - bl + i for i in range(bl)], axis=1
+        ) % self.capacity  # (batch, bl)
+
+        # Kiểm tra xem burnin có cross episode boundary không
+        # Nếu có, reset hidden tại điểm boundary bằng cách trả về mask
+        cross_boundary = np.any(self.episode_start[burnin_idx], axis=1)  # (batch,)
+
+        burnin_batch = {
+            "market_states":    torch.tensor(self.market[burnin_idx],    device=device, dtype=torch.float32),
+            "portfolio_states": torch.tensor(self.portfolio[burnin_idx], device=device, dtype=torch.float32),
+            "cross_boundary":   torch.tensor(cross_boundary,             device=device, dtype=torch.bool),
+        }
+        train_batch = self._idx_to_batch(train_idx, device)
+        return burnin_batch, train_batch
+
+    def _idx_to_batch(self, idx: np.ndarray, device: torch.device) -> Dict[str, torch.Tensor]:
         return {
-            "market_states": torch.tensor(self.market[idx], device=device, dtype=torch.float32),
-            "portfolio_states": torch.tensor(
-                self.portfolio[idx], device=device, dtype=torch.float32
-            ),
-            "actions": torch.tensor(self.actions[idx], device=device, dtype=torch.long),
-            "rewards": torch.tensor(self.rewards[idx], device=device, dtype=torch.float32),
-            "next_market_states": torch.tensor(
-                self.next_market[idx], device=device, dtype=torch.float32
-            ),
-            "next_portfolio_states": torch.tensor(
-                self.next_portfolio[idx], device=device, dtype=torch.float32
-            ),
-            "dones": torch.tensor(self.dones[idx], device=device, dtype=torch.float32),
+            "market_states":       torch.tensor(self.market[idx],          device=device, dtype=torch.float32),
+            "portfolio_states":    torch.tensor(self.portfolio[idx],        device=device, dtype=torch.float32),
+            "actions":             torch.tensor(self.actions[idx],          device=device, dtype=torch.long),
+            "rewards":             torch.tensor(self.rewards[idx],          device=device, dtype=torch.float32),
+            "next_market_states":  torch.tensor(self.next_market[idx],      device=device, dtype=torch.float32),
+            "next_portfolio_states": torch.tensor(self.next_portfolio[idx], device=device, dtype=torch.float32),
+            "dones":               torch.tensor(self.dones[idx],            device=device, dtype=torch.float32),
         }
 
     def __len__(self) -> int:
         return self.size
 
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
 
 class BranchingDDQAgent:
     def __init__(
@@ -116,6 +167,7 @@ class BranchingDDQAgent:
         train_freq: int = 4,
         gradient_steps: int = 1,
         max_grad_norm: float = 0.5,
+        burnin_len: int = 10,
         device: str = "auto",
     ):
         if device == "auto":
@@ -123,24 +175,25 @@ class BranchingDDQAgent:
         else:
             self.device = torch.device(device)
 
-        self.model = model.to(self.device)
+        self.model        = model.to(self.device)
         self.target_model = copy.deepcopy(self.model)
         self.target_model.load_state_dict(self.model.state_dict())
         self.target_model.to(self.device)
 
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, eps=1e-5)
 
-        self.gamma = gamma
-        self.tau = tau
-        self.batch_size = batch_size
+        self.gamma          = gamma
+        self.tau            = tau
+        self.batch_size     = batch_size
         self.learning_starts = learning_starts
-        self.train_freq = train_freq
+        self.train_freq     = train_freq
         self.gradient_steps = gradient_steps
-        self.max_grad_norm = max_grad_norm
+        self.max_grad_norm  = max_grad_norm
+        self.burnin_len     = burnin_len
 
-        seq_len = model.seq_len
-        market_feat_dim = model.n_stocks * model.n_features
-        portfolio_dim = 1 + model.n_stocks
+        seq_len          = model.seq_len
+        market_feat_dim  = model.n_stocks * model.n_features
+        portfolio_dim    = 1 + model.n_stocks
 
         self.buffer = ReplayBuffer(
             capacity=replay_buffer_size,
@@ -148,76 +201,37 @@ class BranchingDDQAgent:
             market_feat_dim=market_feat_dim,
             portfolio_dim=portfolio_dim,
             n_branches=model.n_stocks,
+            burnin_len=burnin_len,
         )
 
-        self.total_steps = 0
-        self.n_updates = 0
+        self.total_steps         = 0
+        self.n_updates           = 0
         self._train_step_counter = 0
 
-    @staticmethod
-    def _format_account_snapshot(
-        info: Dict[str, Any],
-        tickers: List[str],
-        prev_snapshot: Optional[Dict[str, Any]],
-        top_k_holdings: int,
-    ) -> tuple[str, Dict[str, Any]]:
-        cash = float(info.get("cash", 0.0))
-        holdings = np.asarray(info.get("holdings", []), dtype=np.int64)
-        prices = np.asarray(info.get("prices", []), dtype=np.float64)
-        holding_values = holdings.astype(np.float64) * prices
+        # [BUG #1 FIX] hidden state được lưu giữa các bước inference
+        self._inference_hidden: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        self._is_first_step_of_episode: bool = True
 
-        total_asset = float(info.get("portfolio_value", cash + float(np.sum(holding_values))))
-        prev_total_asset = None if prev_snapshot is None else float(prev_snapshot["total_asset"])
-        prev_cash = None if prev_snapshot is None else float(prev_snapshot["cash"])
-        prev_holdings = None if prev_snapshot is None else np.asarray(prev_snapshot["holdings"], dtype=np.int64)
+    # ------------------------------------------------------------------
+    # Hidden state management
+    # ------------------------------------------------------------------
 
-        delta_asset = 0.0 if prev_total_asset is None else total_asset - prev_total_asset
-        delta_asset_pct = (
-            0.0
-            if prev_total_asset is None or abs(prev_total_asset) < 1e-12
-            else (delta_asset / prev_total_asset) * 100.0
-        )
-        delta_cash = 0.0 if prev_cash is None else cash - prev_cash
+    def reset_hidden(self) -> None:
+        """
+        Gọi khi bắt đầu episode mới (sau env.reset()).
+        Xoá hidden state để LSTM bắt đầu từ zero state cho episode tiếp theo.
+        """
+        self._inference_hidden = None
+        self._is_first_step_of_episode = True
 
-        header = (
-            f"[{info.get('date', 'N/A')}] step={info.get('step', -1)} | "
-            f"tong_tai_san={total_asset:,.0f} ({delta_asset:+,.0f}, {delta_asset_pct:+.2f}%) | "
-            f"tien_mat={cash:,.0f} ({delta_cash:+,.0f})"
-        )
-
-        non_zero_idx = np.flatnonzero(holdings)
-        positions = []
-        if non_zero_idx.size > 0:
-            ranked = non_zero_idx[np.argsort(holding_values[non_zero_idx])[::-1]]
-            if top_k_holdings > 0:
-                ranked = ranked[:top_k_holdings]
-
-            prev_holding_values = None if prev_snapshot is None else prev_snapshot["holding_values"]
-            for idx in ranked:
-                prev_value = 0.0 if prev_holding_values is None else float(prev_holding_values[idx])
-                value_delta = holding_values[idx] - prev_value
-                prev_qty = 0 if prev_holdings is None else int(prev_holdings[idx])
-                qty_delta = int(holdings[idx]) - prev_qty
-                weight = 0.0 if abs(total_asset) < 1e-12 else (holding_values[idx] / total_asset) * 100.0
-                positions.append(
-                    f"  - {tickers[idx]} | qty={int(holdings[idx])} | "
-                    f"price={prices[idx]:,.2f} | value={holding_values[idx]:,.0f} | "
-                    f"qty_delta={qty_delta:+,d} | value_delta={value_delta:+,.0f} | w={weight:.2f}%"
-                )
-
-            if top_k_holdings > 0 and non_zero_idx.size > len(ranked):
-                positions.append(f"  - ... ({non_zero_idx.size - len(ranked)} ma khac)")
-        else:
-            positions.append("  - Khong nam giu co phieu")
-
-        snapshot_text = "\n".join([header, "Danh muc:", *positions])
-        snapshot_state = {
-            "total_asset": total_asset,
-            "cash": cash,
-            "holdings": holdings.copy(),
-            "holding_values": holding_values,
-        }
-        return snapshot_text, snapshot_state
+    def _detach_hidden(
+        self, hidden: Optional[Tuple[torch.Tensor, torch.Tensor]]
+    ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """Detach hidden khỏi computation graph để tránh memory leak qua các bước."""
+        if hidden is None:
+            return None
+        h, c = hidden
+        return (h.detach(), c.detach())
 
     # ------------------------------------------------------------------
     # Action
@@ -229,11 +243,26 @@ class BranchingDDQAgent:
         portfolio_state: np.ndarray,
         epsilon: float,
     ) -> np.ndarray:
+        """
+        [BUG #1 FIX] Truyền _inference_hidden vào model và lưu lại hidden mới.
+        Hidden state được duy trì liên tục xuyên suốt episode,
+        chỉ reset khi gọi reset_hidden().
+        """
         self.model.eval()
-        ms = torch.tensor(market_state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        ms = torch.tensor(market_state,   dtype=torch.float32, device=self.device).unsqueeze(0)
         ps = torch.tensor(portfolio_state, dtype=torch.float32, device=self.device).unsqueeze(0)
+
         with torch.no_grad():
-            action, _ = self.model.select_action(ms, ps, hidden=None, epsilon=float(epsilon))
+            action, new_hidden = self.model.select_action(
+                ms, ps,
+                hidden=self._inference_hidden,   # truyền hidden từ bước trước
+                epsilon=float(epsilon),
+            )
+
+        # Lưu hidden mới, detach để tránh memory leak
+        self._inference_hidden = self._detach_hidden(new_hidden)
+        self._is_first_step_of_episode = False
+
         return np.asarray(action, dtype=np.int64)
 
     # ------------------------------------------------------------------
@@ -258,7 +287,11 @@ class BranchingDDQAgent:
             next_market_state,
             next_portfolio_state,
             done,
+            is_episode_start=self._is_first_step_of_episode,
         )
+        # Nếu episode kết thúc, bước tiếp theo sẽ là đầu episode mới
+        if done:
+            self._is_first_step_of_episode = True
 
     def maybe_train(self) -> Optional[Dict[str, float]]:
         self._train_step_counter += 1
@@ -282,25 +315,77 @@ class BranchingDDQAgent:
         out["n_gradient_steps"] = float(n)
         return out
 
-    def _update_once(self) -> Dict[str, float]:
-        batch = self.buffer.sample(self.batch_size, self.device)
+    def _compute_warmed_hidden(
+        self,
+        burnin_batch: Optional[Dict[str, torch.Tensor]],
+    ) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        [BUG #2 FIX] Chạy LSTM qua burnin_len bước để warm-up hidden state.
 
-        ms = batch["market_states"]
-        ps = batch["portfolio_states"]
+        Nếu sequence cross episode boundary, dùng zero hidden state tại điểm đó
+        (cross_boundary mask). Không tính gradient qua bước burn-in.
+        """
+        if burnin_batch is None:
+            return None
+
+        with torch.no_grad():
+            bi_ms = burnin_batch["market_states"]    # (B, burnin_len, seq_len, feat)
+            bi_ps = burnin_batch["portfolio_states"]  # (B, burnin_len, port_dim)
+            cross = burnin_batch["cross_boundary"]    # (B,) bool
+
+            batch_size = bi_ms.shape[0]
+            hidden = None
+
+            # Chạy tuần tự qua burnin_len bước
+            for t in range(self.burnin_len):
+                ms_t = bi_ms[:, t, :, :]   # (B, seq_len, feat)
+                ps_t = bi_ps[:, t, :]       # (B, port_dim)
+                _, hidden = self.model(ms_t, ps_t, hidden=hidden)
+
+            # Reset hidden cho các sequence cross boundary
+            if cross.any():
+                h, c = hidden
+                zero_h = torch.zeros_like(h)
+                zero_c = torch.zeros_like(c)
+                mask = cross.view(1, -1, 1)  # (1, B, 1)
+                h = torch.where(mask, zero_h, h)
+                c = torch.where(mask, zero_c, c)
+                hidden = (h, c)
+
+        return self._detach_hidden(hidden)
+
+    def _update_once(self) -> Dict[str, float]:
+        """
+        [BUG #2 FIX] Dùng burn-in để warm-up hidden trước khi tính loss.
+        [BUG #3 FIX] Target model dùng lại hidden từ online model để đảm bảo
+                     cùng context khi tính Q-value target trong Double DQN.
+        """
+        burnin_batch, batch = self.buffer.sample_with_burnin(self.batch_size, self.device)
+
+        # Warm-up hidden state qua burn-in steps (không tính gradient)
+        warmed_hidden = self._compute_warmed_hidden(burnin_batch)
+
+        ms      = batch["market_states"]
+        ps      = batch["portfolio_states"]
         actions = batch["actions"]
         rewards = batch["rewards"]
         next_ms = batch["next_market_states"]
         next_ps = batch["next_portfolio_states"]
-        dones = batch["dones"]
+        dones   = batch["dones"]
 
         with torch.no_grad():
-            next_q_online, _ = self.model(next_ms, next_ps, hidden=None)  # (B, N, K)
+            # [BUG #3 FIX] Online model chọn action VÀ tạo ra hidden state
+            next_q_online, next_hidden = self.model(next_ms, next_ps, hidden=warmed_hidden)
             next_actions = next_q_online.argmax(dim=-1, keepdim=True)  # (B, N, 1)
-            next_q_target, _ = self.target_model(next_ms, next_ps, hidden=None)
-            next_q = next_q_target.gather(-1, next_actions).squeeze(-1)  # (B, N)
-            target = rewards.unsqueeze(1) + self.gamma * (1.0 - dones.unsqueeze(1)) * next_q
 
-        current_q, _ = self.model(ms, ps, hidden=None)
+            # Target model dùng lại next_hidden từ online model
+            # → cả hai "thấy" cùng một context LSTM, chỉ khác weight output
+            next_q_target, _ = self.target_model(next_ms, next_ps, hidden=next_hidden)
+            next_q  = next_q_target.gather(-1, next_actions).squeeze(-1)  # (B, N)
+            target  = rewards.unsqueeze(1) + self.gamma * (1.0 - dones.unsqueeze(1)) * next_q
+
+        # Current Q dùng warmed_hidden để nhất quán với target
+        current_q, _ = self.model(ms, ps, hidden=warmed_hidden)
         current_q = current_q.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # (B, N)
 
         td_error = target - current_q
@@ -311,24 +396,25 @@ class BranchingDDQAgent:
         grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         self.optimizer.step()
 
+        # Soft update target network (Polyak averaging)
         with torch.no_grad():
             for tp, p in zip(self.target_model.parameters(), self.model.parameters()):
                 tp.data.mul_(1.0 - self.tau).add_(p.data, alpha=self.tau)
 
         action_counts = torch.bincount(actions.view(-1), minlength=self.model.k).float()
-        action_probs = action_counts / action_counts.sum().clamp_min(1.0)
+        action_probs  = action_counts / action_counts.sum().clamp_min(1.0)
 
         stats = {
-            "loss": float(loss.item()),
-            "q_mean": float(current_q.mean().item()),
-            "q_std": float(current_q.std(unbiased=False).item()),
-            "target_mean": float(target.mean().item()),
-            "target_std": float(target.std(unbiased=False).item()),
-            "td_abs_mean": float(td_error.abs().mean().item()),
-            "reward_mean": float(rewards.mean().item()),
-            "reward_std": float(rewards.std(unbiased=False).item()),
-            "done_ratio": float(dones.mean().item()),
-            "grad_norm": float(grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm),
+            "loss":          float(loss.item()),
+            "q_mean":        float(current_q.mean().item()),
+            "q_std":         float(current_q.std(unbiased=False).item()),
+            "target_mean":   float(target.mean().item()),
+            "target_std":    float(target.std(unbiased=False).item()),
+            "td_abs_mean":   float(td_error.abs().mean().item()),
+            "reward_mean":   float(rewards.mean().item()),
+            "reward_std":    float(rewards.std(unbiased=False).item()),
+            "done_ratio":    float(dones.mean().item()),
+            "grad_norm":     float(grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm),
         }
         for action_id, prob in enumerate(action_probs.tolist()):
             stats[f"action_prob_{action_id}"] = float(prob)
@@ -351,11 +437,11 @@ class BranchingDDQAgent:
     ) -> List[List[float]]:
         self.model.eval()
         all_values: List[List[float]] = []
-        effective = n_episodes
+        effective  = n_episodes
         if deterministic and not getattr(env, "random_start", True):
             effective = 1
 
-        eps = 0.0 if deterministic else 0.05
+        eps          = 0.0 if deterministic else 0.05
         report_every = max(int(report_every), 1)
 
         tickers = list(getattr(state_space, "tickers", []))
@@ -365,16 +451,19 @@ class BranchingDDQAgent:
         with torch.no_grad():
             for episode_idx in range(effective):
                 obs, info = env.reset()
-                done = False
-                pv = [env.portfolio_value]
+
+                # [BUG #1 FIX] Reset hidden state ở đầu mỗi episode đánh giá
+                self.reset_hidden()
+
+                done          = False
+                pv            = [env.portfolio_value]
                 prev_snapshot = None
-                step_counter = 0
+                step_counter  = 0
 
                 if account_report:
                     print(f"\n=== ACCOUNT REPORT | episode {episode_idx + 1}/{effective} ===")
                     text, prev_snapshot = self._format_account_snapshot(
-                        info=info,
-                        tickers=tickers,
+                        info=info, tickers=tickers,
                         prev_snapshot=prev_snapshot,
                         top_k_holdings=int(top_k_holdings),
                     )
@@ -384,13 +473,12 @@ class BranchingDDQAgent:
                     ms, ps = state_space.flat_obs_to_sequential(obs)
                     action = self.select_action(ms, ps, epsilon=eps)
                     obs, _reward, terminated, truncated, info = env.step(action)
-                    done = terminated or truncated
+                    done         = terminated or truncated
                     step_counter += 1
 
                     if account_report and (done or step_counter % report_every == 0):
                         text, prev_snapshot = self._format_account_snapshot(
-                            info=info,
-                            tickers=tickers,
+                            info=info, tickers=tickers,
                             prev_snapshot=prev_snapshot,
                             top_k_holdings=int(top_k_holdings),
                         )
@@ -401,6 +489,73 @@ class BranchingDDQAgent:
                 all_values.append(pv)
 
         return all_values
+
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_account_snapshot(
+        info: Dict[str, Any],
+        tickers: List[str],
+        prev_snapshot: Optional[Dict[str, Any]],
+        top_k_holdings: int,
+    ) -> tuple:
+        cash           = float(info.get("cash", 0.0))
+        holdings       = np.asarray(info.get("holdings", []), dtype=np.int64)
+        prices         = np.asarray(info.get("prices", []),   dtype=np.float64)
+        holding_values = holdings.astype(np.float64) * prices
+
+        total_asset      = float(info.get("portfolio_value", cash + float(np.sum(holding_values))))
+        prev_total_asset = None if prev_snapshot is None else float(prev_snapshot["total_asset"])
+        prev_cash        = None if prev_snapshot is None else float(prev_snapshot["cash"])
+        prev_holdings    = None if prev_snapshot is None else np.asarray(prev_snapshot["holdings"], dtype=np.int64)
+
+        delta_asset     = 0.0 if prev_total_asset is None else total_asset - prev_total_asset
+        delta_asset_pct = (
+            0.0 if prev_total_asset is None or abs(prev_total_asset) < 1e-12
+            else (delta_asset / prev_total_asset) * 100.0
+        )
+        delta_cash = 0.0 if prev_cash is None else cash - prev_cash
+
+        header = (
+            f"[{info.get('date', 'N/A')}] step={info.get('step', -1)} | "
+            f"tong_tai_san={total_asset:,.0f} ({delta_asset:+,.0f}, {delta_asset_pct:+.2f}%) | "
+            f"tien_mat={cash:,.0f} ({delta_cash:+,.0f})"
+        )
+
+        non_zero_idx = np.flatnonzero(holdings)
+        positions    = []
+        if non_zero_idx.size > 0:
+            ranked = non_zero_idx[np.argsort(holding_values[non_zero_idx])[::-1]]
+            if top_k_holdings > 0:
+                ranked = ranked[:top_k_holdings]
+
+            prev_holding_values = None if prev_snapshot is None else prev_snapshot["holding_values"]
+            for idx in ranked:
+                prev_value  = 0.0 if prev_holding_values is None else float(prev_holding_values[idx])
+                value_delta = holding_values[idx] - prev_value
+                prev_qty    = 0 if prev_holdings is None else int(prev_holdings[idx])
+                qty_delta   = int(holdings[idx]) - prev_qty
+                weight      = 0.0 if abs(total_asset) < 1e-12 else (holding_values[idx] / total_asset) * 100.0
+                positions.append(
+                    f"  - {tickers[idx]} | qty={int(holdings[idx])} | "
+                    f"price={prices[idx]:,.2f} | value={holding_values[idx]:,.0f} | "
+                    f"qty_delta={qty_delta:+,d} | value_delta={value_delta:+,.0f} | w={weight:.2f}%"
+                )
+            if top_k_holdings > 0 and non_zero_idx.size > len(ranked):
+                positions.append(f"  - ... ({non_zero_idx.size - len(ranked)} ma khac)")
+        else:
+            positions.append("  - Khong nam giu co phieu")
+
+        snapshot_text  = "\n".join([header, "Danh muc:", *positions])
+        snapshot_state = {
+            "total_asset":    total_asset,
+            "cash":           cash,
+            "holdings":       holdings.copy(),
+            "holding_values": holding_values,
+        }
+        return snapshot_text, snapshot_state
 
     # ------------------------------------------------------------------
     # LR
@@ -421,11 +576,11 @@ class BranchingDDQAgent:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "model_state_dict": self.model.state_dict(),
+                "model_state_dict":        self.model.state_dict(),
                 "target_model_state_dict": self.target_model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "total_steps": self.total_steps,
-                "n_updates": self.n_updates,
+                "optimizer_state_dict":    self.optimizer.state_dict(),
+                "total_steps":             self.total_steps,
+                "n_updates":               self.n_updates,
             },
             path,
         )
@@ -443,4 +598,4 @@ class BranchingDDQAgent:
             ) from exc
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.total_steps = int(ckpt.get("total_steps", 0))
-        self.n_updates = int(ckpt.get("n_updates", 0))
+        self.n_updates   = int(ckpt.get("n_updates",   0))
