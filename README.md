@@ -1,3 +1,12 @@
+<div align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,12,20&height=180&section=header&text=RL%20Portfolio%20Trading&fontSize=42&fontColor=fff&animation=twinkling&fontAlignY=35&desc=PPO%20%E2%80%A2%20DDQ%20%E2%80%A2%20Branching%20DDQ%20%E2%80%A2%20Vietnamese%20Stocks&descAlignY=56&descSize=17" width="100%"/>
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
+    <img src="https://img.shields.io/badge/PyTorch-Agents-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white" alt="PyTorch"/>
+    <img src="https://img.shields.io/badge/Task-Portfolio%20Allocation-6A5ACD?style=for-the-badge" alt="Task"/>
+  </p>
+</div>
+
 # Reinforcement Learning for Portfolio Trading
 
 An academic project that compares reinforcement learning agents for portfolio allocation on Vietnamese stock-market data.
@@ -48,3 +57,10 @@ tests/         data, environment, reward, and configuration checks
 ```
 
 > This project is for research and education, not financial advice.
+
+---
+
+<div align="center">
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=120&section=footer" width="100%"/>
+  <em>Reinforcement learning experiments for portfolio allocation.</em>
+</div>
